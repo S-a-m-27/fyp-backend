@@ -1,0 +1,131 @@
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from deepface import DeepFace
+import numpy as np
+import os
+import shutil
+
+router = APIRouter(
+    prefix="/ai",
+    tags=["AI Training"]
+)
+
+# Directories setup
+STORAGE_DIR = "memory_bank"
+IMAGES_DIR = os.path.join("static", "display_images")
+
+for path in [STORAGE_DIR, IMAGES_DIR]:
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+
+@router.post("/train")
+async def train_person(
+        name: str = Form(...),
+        relationship: str = Form(...),
+        files: list[UploadFile] = File(...)
+):
+    all_embeddings = []
+    best_image_saved = False
+
+    # Clean names for folder/file naming
+    clean_name = name.strip().replace(" ", "_").lower()
+    clean_rel = relationship.strip().replace(" ", "_").lower()
+
+    for file in files:
+        temp_path = f"temp_{file.filename}"
+        try:
+            # 1. Save temporary file to process
+            contents = await file.read()
+            with open(temp_path, "wb") as f:
+                f.write(contents)
+
+            # 2. Extract Features using DeepFace
+            results = DeepFace.represent(
+                img_path=temp_path,
+                model_name='Facenet',
+                enforce_detection=True,
+                detector_backend='retinaface'
+            )
+
+            if results:
+                all_embeddings.append(results[0]["embedding"])
+
+                # 3. Save the very first clear image for the Quiz Display
+                if not best_image_saved:
+                    final_img_path = os.path.join(IMAGES_DIR, f"{clean_name}.jpg")
+                    shutil.copyfile(temp_path, final_img_path)
+                    best_image_saved = True
+                    print(f"Display image saved for {clean_name}")
+
+        except Exception as e:
+            print(f"Skipping {file.filename}: {e}")
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    if not all_embeddings:
+        raise HTTPException(status_code=400, detail="AI could not detect any faces. Use clearer photos.")
+
+    # 4. Save Average Embedding (.npy)
+    avg_embedding = np.mean(all_embeddings, axis=0)
+    np.save(os.path.join(STORAGE_DIR, f"{clean_name}_{clean_rel}.npy"), avg_embedding)
+
+    return {
+        "status": "Success",
+        "message": f"Training complete for {name}",
+        "images_processed": len(all_embeddings)
+    }
+
+
+# --- Naya Route: Trained Logon ki list dekhne ke liye ---
+@router.get("/list-trained")
+async def list_trained():
+    files = [f.replace(".npy", "") for f in os.listdir(STORAGE_DIR) if f.endswith(".npy")]
+    return {"people": files}
+
+
+import random
+
+
+# 1. Simple Image Quiz Route
+@router.get("/get-memory-quiz")
+async def get_memory_quiz():
+    if not os.path.exists(IMAGES_DIR):
+        raise HTTPException(status_code=404, detail="No training data found.")
+
+    all_images = [f for f in os.listdir(IMAGES_DIR) if f.endswith(".jpg")]
+    if len(all_images) < 1:
+        raise HTTPException(status_code=404, detail="Kam az kam ek person train karein.")
+
+    # Ek sahi photo select karein
+    correct_img = random.choice(all_images)
+    correct_name = correct_img.replace(".jpg", "").replace("_", " ").title()
+
+    # Options banana (1 correct + 3 wrong)
+    all_names = [f.replace(".jpg", "").replace("_", " ").title() for f in all_images]
+    wrong_options = [n for n in all_names if n != correct_name]
+
+    # Agar trained log kam hain toh dummy options add karein
+    dummy = ["Doctor", "Padosi", "Dost", "Nurse"]
+    random.shuffle(dummy)
+
+    final_options = [correct_name] + (wrong_options + dummy)[:3]
+    random.shuffle(final_options)
+
+    return {
+        "image_url": f"http://127.0.0.1:8000/static/display_images/{correct_img}",
+        "correct_answer": correct_name,
+        "options": final_options
+    }
+
+
+# 2. Group Photo Identification (Placeholder logic)
+@router.get("/get-group-quiz")
+async def get_group_quiz():
+    # Abhi ke liye hum static bhej rahe hain, baad mein AI box wala logic dalain ge
+    return {
+        "group_image": "http://127.0.0.1:8000/static/group_sample.jpg",
+        "question": "Is tasveer mein Sherry kaun sa shakhs hai?",
+        "options": ["Person 1 (Left)", "Person 2 (Right)", "Person 3 (Middle)"],
+        "correct": "Person 1 (Left)"
+    }
