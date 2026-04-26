@@ -38,7 +38,7 @@ app = FastAPI(title="AI Memory Jogger API")
 # 4. CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], # Your React App URL
+    allow_origins=["*"], # Your React App URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -5,6 +5,9 @@ from database import get_db
 import models
 import uuid
 import os
+from schemas import CaretakerCreate
+from passlib.context import CryptContext
+from utils.Password_Hashing import hash_password
 
 router = APIRouter(
     prefix="/auth",
@@ -75,3 +78,29 @@ async def signup_patient(
         db.rollback()
         print(f"Final DB Error: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.post("/signup")
+async def signup_caretaker(user_data: CaretakerCreate, db: Session = Depends(get_db)):
+    existing = db.query(models.Caretaker).filter(models.Caretaker.email == user_data.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Caretaker email already exists")
+
+    password = hash_password(user_data.password)
+
+    new_caretaker = models.Caretaker(
+        firstName=user_data.firstName,
+        lastName=user_data.lastName,
+        email=user_data.email,
+        password=password,
+        age=user_data.age
+    )
+
+    try:
+        db.add(new_caretaker)
+        db.commit()
+        db.refresh(new_caretaker)
+        return {"status": "success", "message": "Caretaker registered successfully!"}
+    except Exception as e:
+        db.rollback()
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail="Database insertion failed")

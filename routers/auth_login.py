@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from sqlalchemy import func
 import models, schemas
+from utils.Password_Hashing import verify_password
 
 router = APIRouter(
     prefix="/auth",
@@ -32,9 +33,11 @@ async def login_by_qr(payload: schemas.QRLoginRequest, db: Session = Depends(get
 async def login(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     # --- CARETAKER LOGIN ---
     if user_credentials.userType == "caretaker":
-        user = db.query(models.User).filter(models.User.email == user_credentials.email).first()
+        user = db.query(models.Caretaker).filter(models.Caretaker.email == user_credentials.email).first()
 
-        if not user or user.password != user_credentials.password:
+        status = verify_password(user_credentials.password,user.password)
+
+        if not status:
             raise HTTPException(status_code=401, detail="Invalid Caretaker Credentials")
 
         return {

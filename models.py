@@ -11,6 +11,15 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     password = Column(String)
 
+class Caretaker(Base):
+    __tablename__ = "caretakers"
+    id = Column(Integer, primary_key=True, index=True)
+    firstName = Column(String)  # underscore hata dein
+    lastName = Column(String)   # underscore hata dein
+    age = Column(Integer)
+    email = Column(String, unique=True, index=True)
+    password = Column(String)
+
 class Patient(Base):
     __tablename__ = "patients"
     id = Column(Integer, primary_key=True, index=True)

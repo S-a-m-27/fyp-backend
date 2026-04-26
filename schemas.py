@@ -28,3 +28,10 @@ class PatientSignup(BaseModel):
 # Jab patient mobile se QR scan karega toh ye data backend jayega
 class QRLoginRequest(BaseModel):
     qr_token: str
+
+class CaretakerCreate(BaseModel):
+    firstName: str
+    lastName: str
+    age: int
+    email: str
+    password: str
