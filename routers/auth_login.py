@@ -25,7 +25,16 @@ async def login_by_qr(payload: schemas.QRLoginRequest, db: Session = Depends(get
         "userType": "patient",
         "patientId": patient.id,
         "patientPhoto": patient.profile_photo_path,
-        "message": "QR Login Successful"
+        "memoryTrainingCompleted": bool(
+            getattr(patient, "memory_training_completed", False),
+        ),
+        "wellnessIntroCompleted": bool(
+            getattr(patient, "wellness_intro_completed", False),
+        ),
+        "trainingSessionsCompleted": int(
+            getattr(patient, "training_sessions_completed", 0) or 0,
+        ),
+        "message": "QR Login Successful",
     }
 
 # --- 2. REGULAR LOGIN (Caretaker aur Manual Patient Login) ---
@@ -36,13 +45,15 @@ async def login(user_credentials: schemas.UserLogin, db: Session = Depends(get_d
         user = db.query(models.Caretaker).filter(models.Caretaker.email == user_credentials.email).first()
 
         status = verify_password(user_credentials.password,user.password)
+        print("Password verification status: ", status )
 
         if not status:
             raise HTTPException(status_code=401, detail="Invalid Caretaker Credentials")
 
         return {
             "status": "success",
-            "userName": user.firstName,
+            "userName": user.firstName + user.lastName,
+            "UserEmail":user.email,
             "userType": "caretaker",
             "access_token": "dummy-token"
         }
@@ -62,7 +73,16 @@ async def login(user_credentials: schemas.UserLogin, db: Session = Depends(get_d
             "userName": patient.name,
             "userType": "patient",
             "patientId": patient.id,
-            "patientPhoto": patient.profile_photo_path
+            "patientPhoto": patient.profile_photo_path,
+            "memoryTrainingCompleted": bool(
+                getattr(patient, "memory_training_completed", False),
+            ),
+            "wellnessIntroCompleted": bool(
+                getattr(patient, "wellness_intro_completed", False),
+            ),
+            "trainingSessionsCompleted": int(
+                getattr(patient, "training_sessions_completed", 0) or 0,
+            ),
         }
 
     raise HTTPException(status_code=400, detail="Invalid User Type")

@@ -1,90 +1,157 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from deepface import DeepFace
-import numpy as np
 import os
+import random
 import shutil
+import uuid
+from pathlib import Path
+from typing import List, Optional
+
+import numpy as np
+from deepface import DeepFace
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+
+from app_paths import BACKEND_DIR, STATIC_DIR, media_path
 
 router = APIRouter(
     prefix="/ai",
-    tags=["AI Training"]
+    tags=["AI Training"],
 )
 
-# Directories setup
-STORAGE_DIR = "memory_bank"
-IMAGES_DIR = os.path.join("static", "display_images")
+# Directories setup (anchored to backend package, not process cwd)
+STORAGE_DIR = str(BACKEND_DIR / "memory_bank")
+IMAGES_DIR = str(STATIC_DIR / "display_images")
 
 for path in [STORAGE_DIR, IMAGES_DIR]:
-    if not os.path.exists(path):
-        os.makedirs(path)
+    os.makedirs(path, exist_ok=True)
+
+_GENERIC_MEDIA_ROOT = (STATIC_DIR / "memory" / "generic").resolve()
 
 
-@router.post("/train")
-async def train_person(
-        name: str = Form(...),
-        relationship: str = Form(...),
-        files: list[UploadFile] = File(...)
-):
-    all_embeddings = []
+def _resolved_train_path(image_path: str) -> Optional[str]:
+    if not image_path:
+        return None
+    resolved = image_path
+    if not os.path.isabs(resolved) and not os.path.isfile(resolved):
+        cand = media_path(resolved)
+        if cand.is_file():
+            resolved = str(cand)
+    if not os.path.isfile(resolved):
+        return None
+    return resolved
+
+
+def _path_is_under_generic_library(resolved_os_path: str) -> bool:
+    """Generic catalog images are never embedded — quizzes use titles/manifest only."""
+    try:
+        p = Path(resolved_os_path).resolve()
+        return p == _GENERIC_MEDIA_ROOT or _GENERIC_MEDIA_ROOT in p.parents
+    except (OSError, ValueError):
+        return False
+
+
+def train_faces_from_paths(
+    name: str,
+    relationship: str,
+    image_paths: list[str],
+) -> dict:
+    """Run DeepFace on existing image files, save embedding + display image.
+
+    Used by ``POST /ai/train`` (temp files) and by **personal** memory upload
+    (``static/memory/personal/``). **Never** call this for generic library paths
+    under ``static/memory/generic/`` — those are quiz-only (titles from DB /
+    manifest), not relative face recognition.
+    """
+    resolved_ok: List[str] = []
+    for image_path in image_paths:
+        r = _resolved_train_path(image_path)
+        if r:
+            resolved_ok.append(r)
+
+    if any(_path_is_under_generic_library(r) for r in resolved_ok):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Face embedding training is only for personal relative photos. "
+                "Generic library images are not trained (quiz uses titles / manifest)."
+            ),
+        )
+
+    all_embeddings: list = []
     best_image_saved = False
 
-    # Clean names for folder/file naming
     clean_name = name.strip().replace(" ", "_").lower()
     clean_rel = relationship.strip().replace(" ", "_").lower()
 
-    for file in files:
-        temp_path = f"temp_{file.filename}"
+    for resolved in resolved_ok:
         try:
-            # 1. Save temporary file to process
-            contents = await file.read()
-            with open(temp_path, "wb") as f:
-                f.write(contents)
-
-            # 2. Extract Features using DeepFace
             results = DeepFace.represent(
-                img_path=temp_path,
-                model_name='Facenet',
+                img_path=resolved,
+                model_name="Facenet",
                 enforce_detection=True,
-                detector_backend='retinaface'
+                detector_backend="retinaface",
             )
 
             if results:
                 all_embeddings.append(results[0]["embedding"])
 
-                # 3. Save the very first clear image for the Quiz Display
                 if not best_image_saved:
                     final_img_path = os.path.join(IMAGES_DIR, f"{clean_name}.jpg")
-                    shutil.copyfile(temp_path, final_img_path)
+                    shutil.copyfile(resolved, final_img_path)
                     best_image_saved = True
                     print(f"Display image saved for {clean_name}")
 
         except Exception as e:
-            print(f"Skipping {file.filename}: {e}")
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            print(f"Skipping {resolved}: {e}")
 
     if not all_embeddings:
-        raise HTTPException(status_code=400, detail="AI could not detect any faces. Use clearer photos.")
+        raise HTTPException(
+            status_code=400,
+            detail="AI could not detect any faces. Use clearer photos.",
+        )
 
-    # 4. Save Average Embedding (.npy)
     avg_embedding = np.mean(all_embeddings, axis=0)
-    np.save(os.path.join(STORAGE_DIR, f"{clean_name}_{clean_rel}.npy"), avg_embedding)
+    np.save(
+        os.path.join(STORAGE_DIR, f"{clean_name}_{clean_rel}.npy"),
+        avg_embedding,
+    )
 
     return {
         "status": "Success",
         "message": f"Training complete for {name}",
-        "images_processed": len(all_embeddings)
+        "images_processed": len(all_embeddings),
     }
+
+
+@router.post("/train")
+async def train_person(
+    name: str = Form(...),
+    relationship: str = Form(...),
+    files: list[UploadFile] = File(...),
+):
+    temp_paths: list[str] = []
+    try:
+        for file in files:
+            safe = f"temp_{uuid.uuid4().hex}_{file.filename or 'img'}"
+            contents = await file.read()
+            with open(safe, "wb") as f:
+                f.write(contents)
+            temp_paths.append(safe)
+        return train_faces_from_paths(name, relationship, temp_paths)
+    finally:
+        for p in temp_paths:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 
 # --- Naya Route: Trained Logon ki list dekhne ke liye ---
 @router.get("/list-trained")
 async def list_trained():
-    files = [f.replace(".npy", "") for f in os.listdir(STORAGE_DIR) if f.endswith(".npy")]
+    files = [
+        f.replace(".npy", "") for f in os.listdir(STORAGE_DIR) if f.endswith(".npy")
+    ]
     return {"people": files}
-
-
-import random
 
 
 # 1. Simple Image Quiz Route
@@ -95,7 +162,10 @@ async def get_memory_quiz():
 
     all_images = [f for f in os.listdir(IMAGES_DIR) if f.endswith(".jpg")]
     if len(all_images) < 1:
-        raise HTTPException(status_code=404, detail="Kam az kam ek person train karein.")
+        raise HTTPException(
+            status_code=404,
+            detail="Kam az kam ek person train karein.",
+        )
 
     # Ek sahi photo select karein
     correct_img = random.choice(all_images)
@@ -115,7 +185,7 @@ async def get_memory_quiz():
     return {
         "image_url": f"http://127.0.0.1:8000/static/display_images/{correct_img}",
         "correct_answer": correct_name,
-        "options": final_options
+        "options": final_options,
     }
 
 
@@ -127,5 +197,5 @@ async def get_group_quiz():
         "group_image": "http://127.0.0.1:8000/static/group_sample.jpg",
         "question": "Is tasveer mein Sherry kaun sa shakhs hai?",
         "options": ["Person 1 (Left)", "Person 2 (Right)", "Person 3 (Middle)"],
-        "correct": "Person 1 (Left)"
+        "correct": "Person 1 (Left)",
     }

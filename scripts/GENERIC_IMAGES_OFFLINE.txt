@@ -1,0 +1,66 @@
+GENERIC MEMORY LIBRARY — FOLDER LAYOUT (OFFLINE AT RUNTIME)
+==========================================================
+
+Images are never loaded from the internet during app use. They live only under:
+
+  backend/backend/static/memory/generic/
+
+Structure — ONE main folder per category (topic), MANY bundle subfolders inside it:
+
+  static/memory/generic/<topic_slug>/<bundle_slug>/<file>.jpg
+
+You do **not** create three different “war_history” top-level folders. There is
+exactly one folder named ``war_history``; three purchased war packs = three
+**subfolders** under it:
+
+  static/memory/generic/war_history/
+    included/0.jpg … 9.jpg              ← default seed bundle
+    ww2_europe/0.jpg …                   ← pack A
+    cold_war_archives/0.jpg …            ← pack B
+
+Examples (paths are all under the same ``war_history`` parent):
+  static/memory/generic/war_history/included/0.jpg … 9.jpg
+  static/memory/generic/war_history/ww2_europe/0.jpg
+  static/memory/generic/war_history/cold_war_archives/0.jpg
+
+Same topic (e.g. war_history) can have many bundle subfolders; each bundle is a
+separate collection under that category. The database row stores:
+  library_topic = war_history
+  library_collection_slug = ww2_europe   (or "included" for the starter set)
+
+The API lists bundles with:
+  GET /memory/generic/bundles
+
+Topics (labels) with:
+  GET /memory/generic/topics
+  (each topic includes default_bundle_slug, usually "included")
+
+
+SEED (80 cards)
+---------------
+Bundled starter images use bundle slug:  included
+
+Paths look like:
+  static/memory/generic/cricket/included/0.jpg … 9.jpg
+
+Export a CSV checklist:
+  cd backend/backend
+  python scripts/export_generic_image_checklist.py
+
+One-time download from URLs you choose (internet only while script runs):
+  python scripts/download_generic_images_from_manifest.py your_urls.json
+
+Manifest keys must match paths under generic/, e.g.:
+  "war_history/included/0.jpg": "https://…/image.jpg"
+
+
+ADDING A NEW PURCHASED BUNDLE
+-----------------------------
+1. Create folder: static/memory/generic/<topic>/<new_bundle_slug>/
+2. Add .jpg (or upload via POST /memory/upload with library_type=generic,
+   library_topic, library_collection_slug — files go under that folder).
+3. Insert or upload one MemoryItem per image with matching library_topic and
+   library_collection_slug (quiz uses titles on those rows).
+
+If you previously seeded flat paths, delete generic rows and re-seed after
+placing files (see earlier migration notes).
