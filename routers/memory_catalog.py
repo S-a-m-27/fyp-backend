@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,15 +12,37 @@ from sqlalchemy.orm import Session
 
 import models
 import schemas
+from app_paths import STATIC_DIR
 from data.generic_memory_library import (
-    DEFAULT_GENERIC_BUNDLE_SLUG,
-    GENERIC_TOPIC_CATALOG,
+    bundle_is_free_on_disk,
+    discover_generic_topic_cards,
+    load_bundle_manifest_dict,
+    list_bundle_slugs_on_disk,
+    parse_bundle_pricing,
+    topic_exists_on_disk,
 )
 from database import get_db
 
 router = APIRouter(prefix="/memory/catalog", tags=["Memory catalog"])
 
-_TOPIC_SLUGS = {t["slug"] for t in GENERIC_TOPIC_CATALOG}
+_IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
+
+
+def generic_topic_image_counts(db: Session) -> dict[str, int]:
+    """Count generic ``MemoryItem`` rows per ``library_topic`` (for catalog UI)."""
+    rows = (
+        db.query(
+            models.MemoryItem.library_topic,
+            func.count(models.MemoryItem.id),
+        )
+        .filter(
+            models.MemoryItem.library_type == "generic",
+            models.MemoryItem.library_topic.isnot(None),
+        )
+        .group_by(models.MemoryItem.library_topic)
+        .all()
+    )
+    return {str(r[0]): int(r[1]) for r in rows if r[0] is not None}
 
 
 def _caretaker_or_404(db: Session, email: str) -> None:
@@ -46,6 +69,26 @@ def _patient_auth(
     return p
 
 
+def _count_disk_images_with_manifest(bundle_dir: Path, manifest: dict) -> int:
+    n = 0
+    if not bundle_dir.is_dir():
+        return 0
+    for fp in bundle_dir.iterdir():
+        if not fp.is_file() or fp.suffix.lower() not in _IMAGE_EXTS:
+            continue
+        meta = manifest.get(fp.name)
+        if not isinstance(meta, dict):
+            continue
+        title = str(meta.get("title") or "").strip()
+        if title:
+            n += 1
+    return n
+
+
+def _bundle_dir(topic_slug: str, bundle_slug: str) -> Path:
+    return (STATIC_DIR / "memory" / "generic" / topic_slug / bundle_slug).resolve()
+
+
 def _bundle_label(slug: str) -> str:
     if not slug:
         return "Bundle"
@@ -53,17 +96,18 @@ def _bundle_label(slug: str) -> str:
 
 
 @router.get("/topics", response_model=List[schemas.GenericTopicInfo])
-def catalog_topics():
-    """Same eight topic cards as /memory/generic/topics (for RN catalog home)."""
+def catalog_topics(db: Session = Depends(get_db)):
+    """Topics from on-disk folders; ``approx_count`` = generic images in DB per topic."""
+    counts = generic_topic_image_counts(db)
     return [
         schemas.GenericTopicInfo(
             slug=t["slug"],
             label=t["label"],
-            blurb=t["blurb"],
-            approx_count=10,
-            default_bundle_slug=DEFAULT_GENERIC_BUNDLE_SLUG,
+            blurb=t.get("blurb") or "",
+            approx_count=counts.get(t["slug"], 0),
+            default_bundle_slug=t.get("default_bundle_slug") or "",
         )
-        for t in GENERIC_TOPIC_CATALOG
+        for t in discover_generic_topic_cards()
     ]
 
 
@@ -78,10 +122,10 @@ def list_bundles_for_topic(
     qr_token: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    if topic_slug not in _TOPIC_SLUGS:
+    if not topic_exists_on_disk(topic_slug):
         raise HTTPException(status_code=404, detail="Unknown topic")
 
-    rows = (
+    db_rows = (
         db.query(
             models.MemoryItem.library_collection_slug,
             func.count(models.MemoryItem.id),
@@ -92,9 +136,9 @@ def list_bundles_for_topic(
             models.MemoryItem.library_collection_slug.isnot(None),
         )
         .group_by(models.MemoryItem.library_collection_slug)
-        .order_by(models.MemoryItem.library_collection_slug)
         .all()
     )
+    db_counts = {coll: int(cnt or 0) for coll, cnt in db_rows if coll}
 
     purchase_pairs: set[tuple[str, str]] = set()
     patient_mode = bool(patient_id and (passcode or qr_token))
@@ -108,6 +152,7 @@ def list_bundles_for_topic(
             .filter(
                 models.CaretakerBundlePurchase.patient_id == p.id,
                 models.CaretakerBundlePurchase.caretaker_email == p.caretaker_email,
+                models.CaretakerBundlePurchase.locked.is_(False),
             )
             .all()
         )
@@ -120,10 +165,31 @@ def list_bundles_for_topic(
             detail="Provide caretaker email or patient_id with passcode/qr_token",
         )
 
+    caretaker_bundle_state: dict[str, dict] = {}
+    if email and patient_id and not patient_mode:
+        for rp in (
+            db.query(models.CaretakerBundlePurchase)
+            .filter(
+                models.CaretakerBundlePurchase.caretaker_email == email,
+                models.CaretakerBundlePurchase.patient_id == patient_id,
+                models.CaretakerBundlePurchase.library_topic == topic_slug,
+            )
+            .all()
+        ):
+            lr = getattr(rp, "locked", None)
+            locked_val = bool(lr) if lr is not None else False
+            caretaker_bundle_state[rp.library_collection_slug] = {"locked": locked_val}
+
     out: List[schemas.CatalogBundleDetail] = []
-    for coll, cnt in rows:
-        if not coll:
-            continue
+    for coll in list_bundle_slugs_on_disk(topic_slug):
+        bdir = _bundle_dir(topic_slug, coll)
+        manifest = load_bundle_manifest_dict(bdir)
+        pricing = parse_bundle_pricing(manifest)
+        is_free = bool(pricing["is_free"])
+        cnt = int(db_counts.get(coll, 0))
+        if cnt == 0:
+            cnt = _count_disk_images_with_manifest(bdir, manifest)
+
         avg, rcount = (
             db.query(
                 func.coalesce(func.avg(models.BundleRating.stars), 0),
@@ -162,28 +228,17 @@ def list_bundles_for_topic(
             n_ratings = tr_n
 
         is_purchased = False
-        if email and patient_id:
-            hit = (
-                db.query(models.CaretakerBundlePurchase.id)
-                .filter(
-                    models.CaretakerBundlePurchase.caretaker_email == email,
-                    models.CaretakerBundlePurchase.patient_id == patient_id,
-                    models.CaretakerBundlePurchase.library_topic == topic_slug,
-                    models.CaretakerBundlePurchase.library_collection_slug == coll,
-                )
-                .first()
-            )
-            is_purchased = bool(hit)
+        purchase_pending_admin = False
+        if email and patient_id and not patient_mode:
+            st = caretaker_bundle_state.get(coll)
+            if st is not None:
+                is_purchased = not st["locked"]
+                purchase_pending_admin = bool(st["locked"])
         elif patient_mode:
-            is_purchased = (topic_slug, coll) in purchase_pairs or (
-                coll == DEFAULT_GENERIC_BUNDLE_SLUG
-            )
+            is_purchased = (topic_slug, coll) in purchase_pairs
 
         if patient_mode:
-            visible = (coll == DEFAULT_GENERIC_BUNDLE_SLUG) or (
-                (topic_slug, coll) in purchase_pairs
-            )
-            if not visible:
+            if not is_free and (topic_slug, coll) not in purchase_pairs:
                 continue
 
         cover_row = (
@@ -203,11 +258,15 @@ def list_bundles_for_topic(
                 topic_slug=topic_slug,
                 bundle_slug=coll,
                 display_name=_bundle_label(coll),
-                image_count=int(cnt or 0),
+                image_count=cnt,
                 average_rating=round(avg_f, 2),
                 rating_count=n_ratings,
                 is_purchased=is_purchased,
+                purchase_pending_admin=purchase_pending_admin,
                 cover_file_path=cover_path,
+                is_free=is_free,
+                price_cents=int(pricing.get("price_cents") or 0),
+                currency=str(pricing.get("currency") or "USD"),
             ),
         )
     return out
@@ -225,7 +284,7 @@ def list_memories_in_bundle(
     qr_token: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    if topic_slug not in _TOPIC_SLUGS:
+    if not topic_exists_on_disk(topic_slug):
         raise HTTPException(status_code=404, detail="Unknown topic")
 
     if patient_id is not None and not (passcode or qr_token):
@@ -236,13 +295,14 @@ def list_memories_in_bundle(
 
     if patient_id and (passcode or qr_token):
         p = _patient_auth(db, patient_id, passcode, qr_token)
-        allowed = bundle_slug == DEFAULT_GENERIC_BUNDLE_SLUG or (
+        allowed = bundle_is_free_on_disk(topic_slug, bundle_slug) or (
             db.query(models.CaretakerBundlePurchase.id)
             .filter(
                 models.CaretakerBundlePurchase.patient_id == p.id,
                 models.CaretakerBundlePurchase.caretaker_email == p.caretaker_email,
                 models.CaretakerBundlePurchase.library_topic == topic_slug,
                 models.CaretakerBundlePurchase.library_collection_slug == bundle_slug,
+                models.CaretakerBundlePurchase.locked.is_(False),
             )
             .first()
         )
@@ -281,7 +341,7 @@ def list_memories_in_bundle(
 
 @router.post("/bundles/rate", response_model=schemas.BundleRateResponse)
 def rate_bundle(payload: schemas.BundleRatePayload, db: Session = Depends(get_db)):
-    if payload.topic_slug not in _TOPIC_SLUGS:
+    if not topic_exists_on_disk(payload.topic_slug):
         raise HTTPException(status_code=404, detail="Unknown topic")
     if not payload.bundle_slug:
         raise HTTPException(status_code=400, detail="bundle_slug required")
@@ -290,13 +350,14 @@ def rate_bundle(payload: schemas.BundleRatePayload, db: Session = Depends(get_db
 
     p = _patient_auth(db, payload.patient_id, payload.passcode, payload.qr_token)
 
-    unlocked = payload.bundle_slug == DEFAULT_GENERIC_BUNDLE_SLUG or (
+    unlocked = bundle_is_free_on_disk(payload.topic_slug, payload.bundle_slug) or (
         db.query(models.CaretakerBundlePurchase.id)
         .filter(
             models.CaretakerBundlePurchase.patient_id == p.id,
             models.CaretakerBundlePurchase.caretaker_email == p.caretaker_email,
             models.CaretakerBundlePurchase.library_topic == payload.topic_slug,
             models.CaretakerBundlePurchase.library_collection_slug == payload.bundle_slug,
+            models.CaretakerBundlePurchase.locked.is_(False),
         )
         .first()
     )
@@ -352,14 +413,14 @@ def purchase_bundle(
     db: Session = Depends(get_db),
 ):
     _caretaker_or_404(db, payload.caretaker_email)
-    if payload.topic_slug not in _TOPIC_SLUGS:
+    if not topic_exists_on_disk(payload.topic_slug):
         raise HTTPException(status_code=404, detail="Unknown topic")
     if not payload.bundle_slug:
         raise HTTPException(status_code=400, detail="bundle_slug required")
-    if payload.bundle_slug == DEFAULT_GENERIC_BUNDLE_SLUG:
+    if bundle_is_free_on_disk(payload.topic_slug, payload.bundle_slug):
         raise HTTPException(
             status_code=400,
-            detail="The starter (included) bundle is already available to all patients.",
+            detail="This bundle is free for all patients and does not require purchase.",
         )
 
     patient = (
@@ -376,16 +437,111 @@ def purchase_bundle(
             detail="Patient not found for this caretaker",
         )
 
+    existing = (
+        db.query(models.CaretakerBundlePurchase)
+        .filter(
+            models.CaretakerBundlePurchase.caretaker_email == payload.caretaker_email,
+            models.CaretakerBundlePurchase.patient_id == payload.patient_id,
+            models.CaretakerBundlePurchase.library_topic == payload.topic_slug,
+            models.CaretakerBundlePurchase.library_collection_slug == payload.bundle_slug,
+        )
+        .first()
+    )
+    if existing:
+        lr = getattr(existing, "locked", None)
+        locked_out = bool(lr) if lr is not None else False
+        return schemas.BundlePurchaseResponse(
+            status="ok",
+            already_owned=True,
+            locked=locked_out,
+            purchase_id=existing.id,
+        )
+
+    bdir = _bundle_dir(payload.topic_slug, payload.bundle_slug)
+    manifest = load_bundle_manifest_dict(bdir)
+    pricing = parse_bundle_pricing(manifest)
+    price_cents = int(pricing.get("price_cents") or 0)
+    currency = str(pricing.get("currency") or "USD")
+
     row = models.CaretakerBundlePurchase(
         caretaker_email=payload.caretaker_email,
         patient_id=payload.patient_id,
         library_topic=payload.topic_slug,
         library_collection_slug=payload.bundle_slug,
+        locked=True,
+        price_cents=price_cents,
+        currency=currency,
     )
     db.add(row)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        dup = (
+            db.query(models.CaretakerBundlePurchase)
+            .filter(
+                models.CaretakerBundlePurchase.caretaker_email == payload.caretaker_email,
+                models.CaretakerBundlePurchase.patient_id == payload.patient_id,
+                models.CaretakerBundlePurchase.library_topic == payload.topic_slug,
+                models.CaretakerBundlePurchase.library_collection_slug == payload.bundle_slug,
+            )
+            .first()
+        )
+        lr = getattr(dup, "locked", None) if dup else None
+        locked_out = bool(lr) if lr is not None else False
+        return schemas.BundlePurchaseResponse(
+            status="ok",
+            already_owned=True,
+            locked=locked_out,
+            purchase_id=dup.id if dup else None,
+        )
+
+    patient_label = (patient.name or "").strip() or f"Patient #{patient.id}"
+    amount_line = f"{(price_cents / 100.0):.2f} {currency}"
+    msg = (
+        f"Payment pending: {payload.caretaker_email} requested unlock of "
+        f"'{payload.topic_slug}/{payload.bundle_slug}' for {patient_label} "
+        f"({amount_line}). Approve in admin when payment is confirmed."
+    )
+    db.add(
+        models.AdminWalletLedger(
+            amount_cents=price_cents,
+            currency=currency,
+            purchase_id=row.id,
+            description=f"Bundle purchase (pending admin): {payload.topic_slug}/{payload.bundle_slug}",
+        ),
+    )
+    db.add(
+        models.AdminNotification(
+            purchase_id=row.id,
+            message=msg,
+        ),
+    )
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        return schemas.BundlePurchaseResponse(status="ok", already_owned=True)
-    return schemas.BundlePurchaseResponse(status="ok", already_owned=False)
+        dup = (
+            db.query(models.CaretakerBundlePurchase)
+            .filter(
+                models.CaretakerBundlePurchase.caretaker_email == payload.caretaker_email,
+                models.CaretakerBundlePurchase.patient_id == payload.patient_id,
+                models.CaretakerBundlePurchase.library_topic == payload.topic_slug,
+                models.CaretakerBundlePurchase.library_collection_slug == payload.bundle_slug,
+            )
+            .first()
+        )
+        lr = getattr(dup, "locked", None) if dup else None
+        locked_out = bool(lr) if lr is not None else False
+        return schemas.BundlePurchaseResponse(
+            status="ok",
+            already_owned=True,
+            locked=locked_out,
+            purchase_id=dup.id if dup else None,
+        )
+    return schemas.BundlePurchaseResponse(
+        status="ok",
+        already_owned=False,
+        locked=True,
+        purchase_id=row.id,
+    )

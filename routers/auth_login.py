@@ -42,9 +42,16 @@ async def login_by_qr(payload: schemas.QRLoginRequest, db: Session = Depends(get
 async def login(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     # --- CARETAKER LOGIN ---
     if user_credentials.userType == "caretaker":
-        user = db.query(models.Caretaker).filter(models.Caretaker.email == user_credentials.email).first()
+        email = (user_credentials.email or "").strip()
+        user = (
+            db.query(models.Caretaker)
+            .filter(models.Caretaker.email == email)
+            .first()
+        )
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid Caretaker Credentials")
 
-        status = verify_password(user_credentials.password,user.password)
+        status = verify_password(user_credentials.password, user.password)
         print("Password verification status: ", status )
 
         if not status:

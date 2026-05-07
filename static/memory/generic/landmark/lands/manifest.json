@@ -1,10 +1,14 @@
 {
-  "0.jpg": {
+"__bundle__": {
+  "price": 4.99,
+  "currency": "USD"
+},
+  "Effiel tower.png": {
     "title": "The Eiffel Tower",
     "location": "Champ de Mars, Paris, France",
     "description": "A wide-angle landscape shot captures the intricate iron lattice of the Eiffel Tower standing against a vibrant sunset sky filled with warm orange, pink, and purple hues. The tower is seen from the Champ de Mars park, with neat green lawns and mature trees lining the approach. The lights of the structure are just beginning to twinkle as night descends, while elegant Parisian buildings line the banks of the distant Seine River."
   },
-  "1.jpg": {
+  "Grand Canyon.png": {
     "title": "The Grand Canyon",
     "location": "Grand Canyon National Park, Arizona, USA",
     "description": "A breathtaking panorama of the vast Grand Canyon, capturing the immense scale of the multi-layered rock formations. The perspective looks deep into the chasm where the Colorado River winds. The early morning light (mirroring the warm glow in the Eiffel Tower image) illuminates the distinct red, orange, and purple strata, creating profound shadows that emphasize the texture and depth of the geology. Distant plateaus stretch across the horizon under a soft, cloudy dawn sky."

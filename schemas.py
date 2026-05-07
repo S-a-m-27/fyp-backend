@@ -68,8 +68,8 @@ class GenericTopicInfo(BaseModel):
     slug: str
     label: str
     blurb: str
-    approx_count: int = 10
-    # Default on-disk bundle folder for seeded cards (more bundles = more subfolders under this topic).
+    approx_count: int = 0
+    # Default on-disk bundle folder name (e.g. ``included``); each bundle has its own ``manifest.json``.
     default_bundle_slug: str = "included"
 
 
@@ -91,8 +91,14 @@ class CatalogBundleDetail(BaseModel):
     average_rating: float = 0.0
     rating_count: int = 0
     is_purchased: bool = False
+    # True when a purchase row exists but admin has not yet approved (patient has no access).
+    purchase_pending_admin: bool = False
     # First image in bundle (for card thumbnails in the app).
     cover_file_path: Optional[str] = None
+    # From bundle ``manifest.json`` key ``__bundle__`` (default: free).
+    is_free: bool = True
+    price_cents: int = 0
+    currency: str = "USD"
 
 
 class BundleRatePayload(BaseModel):
@@ -120,6 +126,9 @@ class BundlePurchasePayload(BaseModel):
 class BundlePurchaseResponse(BaseModel):
     status: str
     already_owned: bool = False
+    # When True, patient cannot access bundle until admin approves (see CaretakerBundlePurchase.locked).
+    locked: bool = False
+    purchase_id: Optional[int] = None
 
 
 class MemoryGalleryItem(BaseModel):
@@ -267,3 +276,41 @@ class SessionCreate(BaseModel):
     patient_id: int
     mode: str
     duration_minutes: int = 0
+
+
+# ---------- Admin (wallet + purchase approval) ----------
+
+
+class AdminWalletBalanceRow(BaseModel):
+    currency: str
+    balance_cents: int
+
+
+class AdminWalletSummary(BaseModel):
+    balances: List[AdminWalletBalanceRow]
+
+
+class AdminPendingPurchaseItem(BaseModel):
+    id: int
+    caretaker_email: str
+    patient_id: int
+    patient_name: Optional[str] = None
+    library_topic: str
+    library_collection_slug: str
+    price_cents: Optional[int] = None
+    currency: Optional[str] = None
+    locked: bool = True
+    purchased_at: Optional[datetime] = None
+
+
+class AdminNotificationItem(BaseModel):
+    id: int
+    purchase_id: Optional[int] = None
+    message: str
+    read_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class AdminApprovePurchaseResponse(BaseModel):
+    status: str
+    already_unlocked: bool = False

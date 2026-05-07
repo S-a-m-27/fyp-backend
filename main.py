@@ -20,6 +20,7 @@ from routers import (
     stats_router,
     patient_mgmt,
     dashboard,
+    admin,
 )
 
 # 1. Create Database Tables
@@ -97,6 +98,34 @@ try:
             UPDATE patients SET training_sessions_completed = 3
                 WHERE memory_training_completed IS TRUE
                 AND (training_sessions_completed IS NULL OR training_sessions_completed < 3);
+
+            ALTER TABLE caretaker_bundle_purchases ADD COLUMN IF NOT EXISTS locked BOOLEAN;
+            UPDATE caretaker_bundle_purchases SET locked = FALSE WHERE locked IS NULL;
+            ALTER TABLE caretaker_bundle_purchases ALTER COLUMN locked SET DEFAULT TRUE;
+
+            ALTER TABLE caretaker_bundle_purchases ADD COLUMN IF NOT EXISTS price_cents INTEGER;
+            ALTER TABLE caretaker_bundle_purchases ADD COLUMN IF NOT EXISTS currency VARCHAR(8);
+
+            CREATE TABLE IF NOT EXISTS admin_wallet_ledger (
+                id SERIAL PRIMARY KEY,
+                amount_cents INTEGER NOT NULL,
+                currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+                purchase_id INTEGER REFERENCES caretaker_bundle_purchases(id) ON DELETE SET NULL,
+                description VARCHAR(500),
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS ix_admin_wallet_ledger_purchase
+                ON admin_wallet_ledger(purchase_id);
+
+            CREATE TABLE IF NOT EXISTS admin_notifications (
+                id SERIAL PRIMARY KEY,
+                purchase_id INTEGER REFERENCES caretaker_bundle_purchases(id) ON DELETE CASCADE,
+                message TEXT NOT NULL,
+                read_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS ix_admin_notifications_read
+                ON admin_notifications(read_at);
             """
         ))
         conn.commit()
@@ -132,22 +161,22 @@ app.include_router(ai_video.router)
 app.include_router(patient_mgmt.router)
 app.include_router(stats_router.router, prefix="/ai")
 app.include_router(dashboard.router)
+app.include_router(admin.router)
 
 
-# Seed curated generic memory library (8 topics × 10 images) once per empty DB.
-def _seed_generic_memories():
+# Generic library: DB rows only from on-disk images + per-bundle manifest.json (see memory.sync_disk_generic_library_to_db).
+def _sync_generic_library_from_disk():
     from database import SessionLocal
-    from routers.memory import ensure_generic_library_seeded, sync_disk_generic_library_to_db
+    from routers.memory import sync_disk_generic_library_to_db
 
     db = SessionLocal()
     try:
-        ensure_generic_library_seeded(db)
         sync_disk_generic_library_to_db(db)
     finally:
         db.close()
 
 
-_seed_generic_memories()
+_sync_generic_library_from_disk()
 
 
 @app.get("/")

@@ -1,22 +1,22 @@
 """
 One-time download helper (uses internet ONLY while you run this script).
 
-1. Export checklist:
-     python scripts/export_generic_image_checklist.py
+Create a JSON map of ``topic/bundle/filename`` → direct image URL. Filenames can
+be anything; they must match what you list in each bundle's ``manifest.json``.
 
-2. Create a manifest JSON, e.g. generic_urls.json, keys = path under generic/:
-     {
-       "war_history/included/0.jpg": "https://example.com/direct-link-to-image.jpg",
-       "war_history/included/1.jpg": "https://..."
-     }
-   topic = first folder, bundle = second folder, file name = leaf.
-   Use direct image URLs (image/jpeg).
+Example ``generic_urls.json``::
 
-3. Run (from backend/backend):
-     python scripts/download_generic_images_from_manifest.py generic_urls.json
+  {
+    "war_history/included/my_photo.jpg": "https://example.com/direct-link.jpg"
+  }
 
-Files are saved under static/memory/generic/<key> — same paths the API uses.
-After that, phones and the server need NO internet to show these images.
+Run from ``backend/backend``::
+
+  python scripts/download_generic_images_from_manifest.py generic_urls.json
+
+Files are saved under ``static/memory/generic/<key>``. Add matching
+``manifest.json`` in that bundle folder (same filenames as keys), then restart
+the API so rows sync into the database.
 """
 
 from __future__ import annotations

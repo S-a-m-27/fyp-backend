@@ -15,33 +15,20 @@ import schemas
 from app_paths import STATIC_DIR, media_path
 from data.generic_memory_library import (
     DEFAULT_GENERIC_BUNDLE_SLUG,
-    GENERIC_TOPIC_CATALOG,
-    GENERIC_TOPIC_SLUGS,
-    build_seed_memory_dicts,
+    bump_generic_library_disk_cache,
+    discover_generic_topic_cards,
+    get_free_generic_bundle_pairs,
+    is_safe_library_segment,
 )
 from database import get_db
-from routers.memory_catalog import _patient_auth as _catalog_patient_auth
+from routers.memory_catalog import (
+    _patient_auth as _catalog_patient_auth,
+    generic_topic_image_counts,
+)
 
 router = APIRouter(prefix="/memory", tags=["Memory Management"])
 
-EXPECTED_GENERIC_MEMORY_COUNT = 80
 TRAINING_SESSION_IMAGE_TARGET = 8
-
-
-def ensure_generic_library_seeded(db: Session) -> None:
-    """Insert curated generic cards once (8 topics × 10). Idempotent."""
-    (STATIC_DIR / "memory" / "generic").mkdir(parents=True, exist_ok=True)
-    cnt = (
-        db.query(func.count(models.MemoryItem.id))
-        .filter(models.MemoryItem.library_type == "generic")
-        .scalar()
-        or 0
-    )
-    if cnt >= EXPECTED_GENERIC_MEMORY_COUNT:
-        return
-    for row in build_seed_memory_dicts():
-        db.add(models.MemoryItem(**row))
-    db.commit()
 
 
 _GENERIC_IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
@@ -114,17 +101,18 @@ def _manifest_meta_for_file(
 
 
 def sync_disk_generic_library_to_db(db: Session) -> int:
-    """Create DB rows for on-disk generic images and apply ``manifest.json`` metadata.
+    """Create ``MemoryItem`` rows only for image files that exist on disk **and**
+    have a matching entry in that bundle's ``manifest.json`` (exact filename key,
+    non-empty ``title``).
 
-    Generic shelves are server-shipped (static files + this sync + seed), not
-    populated by caretaker uploads from the mobile app.
-
-    Optional ``manifest.json`` per bundle folder updates ``title``, ``location``,
-    and ``description`` for matching filenames (used in gallery + quiz hints).
+    There is **no** curated seed of placeholder rows: the database reflects your
+    folders + manifests only. Restart the API after adding files or editing
+    ``manifest.json`` to re-sync.
     """
     root = STATIC_DIR / "memory" / "generic"
     if not root.is_dir():
         return 0
+    (STATIC_DIR / "memory" / "generic").mkdir(parents=True, exist_ok=True)
     existing = {
         fp
         for (fp,) in db.query(models.MemoryItem.file_path)
@@ -141,28 +129,36 @@ def sync_disk_generic_library_to_db(db: Session) -> int:
         if not topic_path.is_dir() or topic_path.name.startswith("."):
             continue
         topic = topic_path.name
-        if topic not in GENERIC_TOPIC_SLUGS:
+        if not is_safe_library_segment(topic):
             continue
         for bundle_path in sorted(topic_path.iterdir(), key=lambda p: p.name):
             if not bundle_path.is_dir() or bundle_path.name.startswith("."):
                 continue
             bundle = bundle_path.name
+            if not is_safe_library_segment(bundle):
+                continue
+            manifest_path = bundle_path / "manifest.json"
+            if not manifest_path.is_file():
+                continue
             manifest = _load_bundle_manifest(bundle_path)
+            if not manifest:
+                continue
             for fp in sorted(bundle_path.iterdir(), key=lambda p: p.name):
                 if not fp.is_file() or fp.suffix.lower() not in _GENERIC_IMAGE_SUFFIXES:
                     continue
                 rel = f"static/memory/generic/{topic}/{bundle}/{fp.name}".replace("\\", "/")
-                meta = _manifest_meta_for_file(manifest, fp.name)
-                mt, mloc, mdesc = _meta_strings(meta)
+                raw_meta = manifest.get(fp.name)
+                if not isinstance(raw_meta, dict):
+                    continue
+                mt, mloc, mdesc = _meta_strings(raw_meta)
+                if not mt:
+                    continue
                 if rel in existing:
                     continue
-                stem = fp.stem.replace("_", " ").replace("-", " ").strip()
-                default_title = (stem if len(stem) > 1 else f"{topic} · {fp.name}")[:240]
-                title = mt or default_title
                 db.add(
                     models.MemoryItem(
                         patient_id=None,
-                        title=title,
+                        title=mt,
                         description=mdesc,
                         related_person_name=None,
                         related_person_relation=None,
@@ -181,7 +177,7 @@ def sync_disk_generic_library_to_db(db: Session) -> int:
                 existing.add(rel)
                 added += 1
 
-            # Apply manifest to rows for each on-disk file (stem match if extension differs).
+            # Apply manifest updates to existing rows (stem/extension match allowed).
             for fp in sorted(bundle_path.iterdir(), key=lambda p: p.name):
                 if not fp.is_file() or fp.suffix.lower() not in _GENERIC_IMAGE_SUFFIXES:
                     continue
@@ -220,6 +216,7 @@ def sync_disk_generic_library_to_db(db: Session) -> int:
 
     if added or updated:
         db.commit()
+    bump_generic_library_disk_cache()
     return added + updated
 
 
@@ -312,26 +309,39 @@ def _eligible_memories_query(db: Session, patient_id: int):
         .filter(
             models.CaretakerBundlePurchase.patient_id == patient_id,
             models.CaretakerBundlePurchase.caretaker_email == ce,
+            models.CaretakerBundlePurchase.locked.is_(False),
         )
         .all()
     )
     purchase_tuples = [(a, b) for a, b in purchase_rows if a and b is not None]
 
-    generic_parts = [
-        models.MemoryItem.library_collection_slug == DEFAULT_GENERIC_BUNDLE_SLUG,
-    ]
+    free_pairs = get_free_generic_bundle_pairs()
+    conds = []
+    if free_pairs:
+        conds.append(
+            tuple_(
+                models.MemoryItem.library_topic,
+                models.MemoryItem.library_collection_slug,
+            ).in_(list(free_pairs)),
+        )
     if purchase_tuples:
-        generic_parts.append(
+        conds.append(
             tuple_(
                 models.MemoryItem.library_topic,
                 models.MemoryItem.library_collection_slug,
             ).in_(purchase_tuples),
         )
 
-    generic_ok = and_(
-        models.MemoryItem.library_type == "generic",
-        or_(*generic_parts),
-    )
+    if conds:
+        generic_ok = and_(
+            models.MemoryItem.library_type == "generic",
+            or_(*conds),
+        )
+    else:
+        generic_ok = and_(
+            models.MemoryItem.library_type == "generic",
+            models.MemoryItem.id.in_([]),
+        )
 
     return db.query(models.MemoryItem).filter(
         (models.MemoryItem.patient_id == patient_id)
@@ -341,8 +351,8 @@ def _eligible_memories_query(db: Session, patient_id: int):
 
 
 # --- 1. UPLOAD MEMORY ---
-# Generic branch: optional admin/dev uploads. Production generic cards use seed
-# plus sync_disk_generic_library_to_db at startup — not the caretaker app UI.
+# Generic branch: optional admin/dev uploads. Production generic rows come from
+# on-disk folders + manifest.json via sync_disk_generic_library_to_db at startup.
 # Generic images are never passed through face-embedding training (quiz answers
 # are memory titles / manifest metadata). Only POST /memory/personal/upload trains.
 @router.post("/upload")
@@ -401,17 +411,19 @@ async def upload_memory(
 
 # --- Generic library metadata ---
 @router.get("/generic/topics", response_model=List[schemas.GenericTopicInfo])
-def list_generic_topics():
-    """Eight shelves for reminiscence — labels only (counts are fixed in seed)."""
+def list_generic_topics(db: Session = Depends(get_db)):
+    """Topic cards from on-disk folders; ``approx_count`` = generic images in DB for that topic."""
+    topics = discover_generic_topic_cards()
+    counts = generic_topic_image_counts(db)
     return [
         schemas.GenericTopicInfo(
             slug=t["slug"],
             label=t["label"],
-            blurb=t["blurb"],
-            approx_count=10,
-            default_bundle_slug=DEFAULT_GENERIC_BUNDLE_SLUG,
+            blurb=t.get("blurb") or "",
+            approx_count=counts.get(t["slug"], 0),
+            default_bundle_slug=t.get("default_bundle_slug") or "",
         )
-        for t in GENERIC_TOPIC_CATALOG
+        for t in topics
     ]
 
 

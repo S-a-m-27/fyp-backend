@@ -227,3 +227,42 @@ class CaretakerBundlePurchase(Base):
     library_topic = Column(String(80), nullable=False)
     library_collection_slug = Column(String(120), nullable=False)
     purchased_at = Column(DateTime, default=func.now())
+    # Paid flow: True until admin confirms payment and clears lock (patient has no access while True).
+    locked = Column(Boolean, nullable=False, default=True)
+    price_cents = Column(Integer, nullable=True)
+    currency = Column(String(8), nullable=True)
+
+
+class AdminWalletLedger(Base):
+    """Credits to the platform / admin wallet when a caretaker buys a paid bundle (pending approval)."""
+
+    __tablename__ = "admin_wallet_ledger"
+
+    id = Column(Integer, primary_key=True, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    currency = Column(String(8), nullable=False, default="USD")
+    purchase_id = Column(
+        Integer,
+        ForeignKey("caretaker_bundle_purchases.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    description = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+
+class AdminNotification(Base):
+    """In-app admin messages (e.g. new bundle purchase awaiting payment confirmation)."""
+
+    __tablename__ = "admin_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    purchase_id = Column(
+        Integer,
+        ForeignKey("caretaker_bundle_purchases.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    message = Column(Text, nullable=False)
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
