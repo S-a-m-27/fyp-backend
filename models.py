@@ -160,6 +160,37 @@ class MemoryItem(Base):
     )
 
 
+class PatientQuizMemoryItem(Base):
+    """Caretaker-selected memories that may appear in quiz mode for this patient.
+
+    If no rows exist for a patient, quiz falls back to all eligible memories (legacy).
+    """
+
+    __tablename__ = "patient_quiz_memory_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "memory_item_id",
+            name="uq_patient_quiz_memory_item",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    memory_item_id = Column(
+        Integer,
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime, default=func.now())
+
+
 class MemoryImageRating(Base):
     """Per-memory star rating from a patient during training (feeds bundle averages)."""
 
@@ -265,4 +296,33 @@ class AdminNotification(Base):
     )
     message = Column(Text, nullable=False)
     read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+
+class AuthorizedUser(Base):
+    """Privileged operators (e.g. admin). Seeded from env on API startup."""
+
+    __tablename__ = "authorized_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password = Column(String(255), nullable=False)
+    role = Column(String(32), nullable=False, default="admin")
+    created_at = Column(DateTime, default=func.now())
+
+
+class AdminAuthSession(Base):
+    """Bearer token sessions issued after admin email/password login (token stored hashed only)."""
+
+    __tablename__ = "admin_auth_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    authorized_user_id = Column(
+        Integer,
+        ForeignKey("authorized_users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=func.now())

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -12,26 +11,36 @@ from sqlalchemy.orm import Session
 
 import models
 import schemas
+from data.admin_auth import get_authorized_admin_from_token
 from database import get_db
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
-def require_admin(x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")) -> bool:
-    expected = (os.getenv("ADMIN_API_KEY") or "").strip()
-    if not expected:
+def get_current_admin(
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+    x_admin_token: Optional[str] = Header(None, alias="X-Admin-Token"),
+) -> models.AuthorizedUser:
+    token = (x_admin_token or "").strip()
+    if not token and authorization:
+        auth = authorization.strip()
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if not token:
         raise HTTPException(
-            status_code=503,
-            detail="ADMIN_API_KEY is not set on the server",
+            status_code=401,
+            detail="Missing admin session (use Authorization: Bearer <token> or X-Admin-Token)",
         )
-    if (x_admin_key or "").strip() != expected:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-Admin-Key")
-    return True
+    user = get_authorized_admin_from_token(db, token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired admin session")
+    return user
 
 
 @router.get("/wallet", response_model=schemas.AdminWalletSummary)
 def admin_wallet_summary(
-    _: bool = Depends(require_admin),
+    _admin: models.AuthorizedUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     rows = (
@@ -49,12 +58,37 @@ def admin_wallet_summary(
     return schemas.AdminWalletSummary(balances=balances)
 
 
+@router.get("/wallet/ledger", response_model=List[schemas.AdminLedgerRow])
+def admin_wallet_ledger(
+    _admin: models.AuthorizedUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=500),
+):
+    rows = (
+        db.query(models.AdminWalletLedger)
+        .order_by(models.AdminWalletLedger.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        schemas.AdminLedgerRow(
+            id=r.id,
+            amount_cents=int(r.amount_cents or 0),
+            currency=str(r.currency or "USD"),
+            purchase_id=r.purchase_id,
+            description=r.description,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
 @router.get(
     "/purchases/pending",
     response_model=List[schemas.AdminPendingPurchaseItem],
 )
 def list_pending_purchases(
-    _: bool = Depends(require_admin),
+    _admin: models.AuthorizedUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     q = (
@@ -91,7 +125,7 @@ def list_pending_purchases(
     response_model=List[schemas.AdminNotificationItem],
 )
 def list_admin_notifications(
-    _: bool = Depends(require_admin),
+    _admin: models.AuthorizedUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
     unread_only: bool = Query(True),
 ):
@@ -116,7 +150,7 @@ def list_admin_notifications(
 )
 def approve_bundle_purchase(
     purchase_id: int,
-    _: bool = Depends(require_admin),
+    _admin: models.AuthorizedUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     row = (
@@ -142,7 +176,7 @@ def approve_bundle_purchase(
 @router.post("/notifications/{notification_id}/read", response_model=dict)
 def mark_notification_read(
     notification_id: int,
-    _: bool = Depends(require_admin),
+    _admin: models.AuthorizedUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     n = (

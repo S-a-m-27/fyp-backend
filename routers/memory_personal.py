@@ -124,6 +124,28 @@ def _serialize(memory: models.MemoryItem) -> dict:
     }
 
 
+def append_eligible_generic_memory_dicts(
+    db: Session,
+    patient_id: int,
+    out: List[dict],
+) -> None:
+    """Append serialized generic library rows the patient may use (same as Memories UI)."""
+    from routers import memory as mem_router
+
+    generic_rows = (
+        mem_router._eligible_memories_query(db, patient_id)
+        .filter(models.MemoryItem.library_type == "generic")
+        .options(joinedload(models.MemoryItem.shared_with))
+        .order_by(
+            models.MemoryItem.library_topic,
+            models.MemoryItem.library_collection_slug,
+            models.MemoryItem.id,
+        )
+        .all()
+    )
+    out.extend(_serialize_library_memory_item(m) for m in generic_rows)
+
+
 def _get_owned_memory(
     memory_id: int, caretaker_email: str, db: Session
 ) -> models.MemoryItem:
@@ -324,20 +346,7 @@ def list_personal_memories(
     out: List[dict] = [_serialize(m) for m in memories]
 
     if include_eligible_generic:
-        from routers import memory as mem_router
-
-        generic_rows = (
-            mem_router._eligible_memories_query(db, patient_id)
-            .filter(models.MemoryItem.library_type == "generic")
-            .options(joinedload(models.MemoryItem.shared_with))
-            .order_by(
-                models.MemoryItem.library_topic,
-                models.MemoryItem.library_collection_slug,
-                models.MemoryItem.id,
-            )
-            .all()
-        )
-        out.extend(_serialize_library_memory_item(m) for m in generic_rows)
+        append_eligible_generic_memory_dicts(db, patient_id, out)
 
     return out
 

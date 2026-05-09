@@ -1,7 +1,59 @@
 import os
+from pathlib import Path
 
-from fastapi import FastAPI
+
+def _parse_dotenv_file(path: Path) -> dict:
+    """Return KEY->value from one ``.env`` file (values stripped; quotes optional)."""
+    out = {}
+    if not path.is_file():
+        return out
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        out[key] = val
+    return out
+
+
+def _load_env_files() -> None:
+    """Merge ``.env`` files into ``os.environ``.
+
+    Reads ``backend/backend/.env`` then ``backend/.env`` (later wins on duplicate keys).
+    ``ADMIN_EMAIL`` / ``ADMIN_PASSWORD`` always come from merged files so IDE/shell stubs
+    cannot block the real credentials. Other keys only apply if not already set externally.
+    """
+    inner = Path(__file__).resolve().parent / ".env"
+    outer = Path(__file__).resolve().parent.parent / ".env"
+    merged = {}
+    merged.update(_parse_dotenv_file(inner))
+    merged.update(_parse_dotenv_file(outer))
+    for key, val in merged.items():
+        if key in ("ADMIN_EMAIL", "ADMIN_PASSWORD"):
+            os.environ[key] = val
+        elif key not in os.environ:
+            os.environ[key] = val
+
+
+_load_env_files()
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -12,6 +64,7 @@ from routers import (
     memory,
     memory_catalog,
     memory_personal,
+    memory_quiz_caretaker,
     auth_signup,
     auth_login,
     ai_training,
@@ -126,6 +179,35 @@ try:
             );
             CREATE INDEX IF NOT EXISTS ix_admin_notifications_read
                 ON admin_notifications(read_at);
+
+            CREATE TABLE IF NOT EXISTS authorized_users (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL,
+                role VARCHAR(32) NOT NULL DEFAULT 'admin',
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS ix_authorized_users_email ON authorized_users(email);
+
+            CREATE TABLE IF NOT EXISTS admin_auth_sessions (
+                id SERIAL PRIMARY KEY,
+                token_hash VARCHAR(64) NOT NULL UNIQUE,
+                authorized_user_id INTEGER NOT NULL REFERENCES authorized_users(id) ON DELETE CASCADE,
+                expires_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS ix_admin_auth_sessions_user ON admin_auth_sessions(authorized_user_id);
+            CREATE INDEX IF NOT EXISTS ix_admin_auth_sessions_expires ON admin_auth_sessions(expires_at);
+
+            CREATE TABLE IF NOT EXISTS patient_quiz_memory_items (
+                id SERIAL PRIMARY KEY,
+                patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+                memory_item_id INTEGER NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(patient_id, memory_item_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_patient_quiz_memory_patient
+                ON patient_quiz_memory_items(patient_id);
             """
         ))
         conn.commit()
@@ -155,6 +237,7 @@ app.include_router(auth_login.router)
 app.include_router(memory.router)
 app.include_router(memory_catalog.router)
 app.include_router(memory_personal.router)
+app.include_router(memory_quiz_caretaker.router)
 app.include_router(ai_training.router)
 app.include_router(ai_testing.router)
 app.include_router(ai_video.router)
@@ -179,6 +262,32 @@ def _sync_generic_library_from_disk():
 _sync_generic_library_from_disk()
 
 
+def _bootstrap_admin_from_env():
+    from database import SessionLocal
+    from data.admin_auth import sync_admin_user_from_env
+
+    db = SessionLocal()
+    try:
+        sync_admin_user_from_env(db)
+    finally:
+        db.close()
+
+
+_bootstrap_admin_from_env()
+
+
+@app.get("/admin/dashboard")
+def admin_dashboard_page():
+    """Single-page admin console (wallet, approvals, notifications)."""
+    page = STATIC_DIR / "admin" / "index.html"
+    if not page.is_file():
+        raise HTTPException(status_code=404, detail="Admin dashboard file missing")
+    return FileResponse(page, media_type="text/html; charset=utf-8")
+
+
 @app.get("/")
 def root():
-    return {"message": "AI Memory Jogger Backend is Running"}
+    return {
+        "message": "AI Memory Jogger Backend is Running",
+        "admin_dashboard": "/admin/dashboard",
+    }

@@ -659,6 +659,15 @@ async def get_memory_quiz(
 
     base_query = _eligible_memories_query(db, patient_id)
 
+    pool_rows = (
+        db.query(models.PatientQuizMemoryItem.memory_item_id)
+        .filter(models.PatientQuizMemoryItem.patient_id == patient_id)
+        .all()
+    )
+    pool_ids = [int(r[0]) for r in pool_rows]
+    if pool_ids:
+        base_query = base_query.filter(models.MemoryItem.id.in_(pool_ids))
+
     available_memories = base_query.filter(
         models.MemoryItem.id.not_in(excluded_list),
     ).all()

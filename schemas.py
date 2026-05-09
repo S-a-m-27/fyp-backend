@@ -278,6 +278,23 @@ class SessionCreate(BaseModel):
     duration_minutes: int = 0
 
 
+# ---------- Caretaker quiz pool (subset of patient-visible memories) ----------
+
+
+class QuizPoolPutRequest(BaseModel):
+    memory_ids: List[int]
+
+
+class QuizPoolStateResponse(BaseModel):
+    pool_memory_ids: List[int]
+    candidates: List[MemoryItemSchema]
+
+
+class QuizPoolPutResponse(BaseModel):
+    status: str = "ok"
+    count: int
+
+
 # ---------- Admin (wallet + purchase approval) ----------
 
 
@@ -288,6 +305,15 @@ class AdminWalletBalanceRow(BaseModel):
 
 class AdminWalletSummary(BaseModel):
     balances: List[AdminWalletBalanceRow]
+
+
+class AdminLedgerRow(BaseModel):
+    id: int
+    amount_cents: int
+    currency: str
+    purchase_id: Optional[int] = None
+    description: Optional[str] = None
+    created_at: Optional[datetime] = None
 
 
 class AdminPendingPurchaseItem(BaseModel):
