@@ -208,6 +208,54 @@ try:
             );
             CREATE INDEX IF NOT EXISTS ix_patient_quiz_memory_patient
                 ON patient_quiz_memory_items(patient_id);
+
+            CREATE TABLE IF NOT EXISTS caretaker_defined_quizzes (
+                id SERIAL PRIMARY KEY,
+                patient_id INTEGER NOT NULL UNIQUE REFERENCES patients(id) ON DELETE CASCADE,
+                caretaker_email VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS ix_caretaker_defined_quizzes_email
+                ON caretaker_defined_quizzes(caretaker_email);
+
+            CREATE TABLE IF NOT EXISTS caretaker_defined_quiz_questions (
+                id SERIAL PRIMARY KEY,
+                quiz_id INTEGER NOT NULL REFERENCES caretaker_defined_quizzes(id) ON DELETE CASCADE,
+                slot INTEGER NOT NULL,
+                memory_item_id INTEGER NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+                wrong_option_1 VARCHAR(500) NOT NULL,
+                wrong_option_2 VARCHAR(500) NOT NULL,
+                wrong_option_3 VARCHAR(500) NOT NULL,
+                UNIQUE(quiz_id, slot)
+            );
+            CREATE INDEX IF NOT EXISTS ix_defined_quiz_questions_quiz ON caretaker_defined_quiz_questions(quiz_id);
+
+            ALTER TABLE caretaker_defined_quiz_questions ADD COLUMN IF NOT EXISTS mc_options_json TEXT;
+            ALTER TABLE caretaker_defined_quiz_questions ADD COLUMN IF NOT EXISTS correct_option_index INTEGER;
+
+            CREATE TABLE IF NOT EXISTS patient_dismissed_library_memories (
+                id SERIAL PRIMARY KEY,
+                patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+                memory_item_id INTEGER NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(patient_id, memory_item_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_patient_dismissed_library_patient
+                ON patient_dismissed_library_memories(patient_id);
+
+            CREATE TABLE IF NOT EXISTS patient_quiz_attempts (
+                id SERIAL PRIMARY KEY,
+                patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+                quiz_format VARCHAR(40) NOT NULL,
+                correct_count INTEGER NOT NULL,
+                wrong_count INTEGER NOT NULL DEFAULT 0,
+                target_score INTEGER NOT NULL,
+                passed BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_patient_quiz_attempts_patient
+                ON patient_quiz_attempts(patient_id);
             """
         ))
         conn.commit()

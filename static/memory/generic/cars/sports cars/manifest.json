@@ -1,0 +1,56 @@
+{
+  "__bundle__": {
+    "price": 6.00,
+    "currency": "USD"
+  },
+  "1.png": {
+    "title": "The Neon Interceptor",
+    "location": "Shibuya Crossing, Tokyo, Japan",
+    "description": "A sleek, low-slung electric supercar with glowing cyan accents parked under the towering neon billboards of Tokyo. The wet asphalt reflects the vibrant city lights."
+  },
+  "2.png": {
+    "title": "Alpine Velocity",
+    "location": "Stelvio Pass, Italy",
+    "description": "A classic mid-engine Italian sports car in Rosso Corsa red, carving through a tight hairpin turn with the snow-capped Alps in the background."
+  },
+  "3.png": {
+    "title": "The Golden Hour Grand Tourer",
+    "location": "Pacific Coast Highway, California, USA",
+    "description": "A sophisticated silver grand tourer cruising along the cliffside at sunset, reflecting the warm orange light of the Pacific coast."
+  },
+  "4.png": {
+    "title": "Midnight Le Mans",
+    "location": "Circuit de la Sarthe, France",
+    "description": "A high-tech endurance race car with a massive rear wing and yellow-tinted LED headlights captured with long exposure light trails."
+  },
+  "5.png": {
+    "title": "Desert Aero",
+    "location": "Dubai-Al Ain Road, UAE",
+    "description": "A matte gold hypercar parked on a pristine stretch of desert highway with massive sand dunes and heat shimmer."
+  },
+  "6.png": {
+    "title": "The British Heritage",
+    "location": "Cotswolds, United Kingdom",
+    "description": "A British racing green lightweight sports car parked in front of an ancient stone cottage in the English countryside."
+  },
+  "7.png": {
+    "title": "Cyber-Track Performance",
+    "location": "Nürburgring Nordschleife, Germany",
+    "description": "A track-focused monster with a forged carbon-fiber hood attacking the famous Carousel corner at the Nürburgring."
+  },
+  "8.png": {
+    "title": "Riviera Elegance",
+    "location": "Monte Carlo, Monaco",
+    "description": "A white convertible supercar idling in front of the Casino de Monte-Carlo, surrounded by palm trees and luxury architecture."
+  },
+  "9.png": {
+    "title": "Scandinavian Precision",
+    "location": "Atlantic Ocean Road, Norway",
+    "description": "A deep blue hypercar with dihedral doors parked on a scenic bridge over the crashing waves of the North Sea."
+  },
+  "10.png": {
+    "title": "The Muscle Legend",
+    "location": "Route 66, Arizona, USA",
+    "description": "A wide-body modern American muscle car performing a burnout on a historic stretch of Route 66 at midday."
+  }
+}

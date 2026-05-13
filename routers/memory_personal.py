@@ -104,7 +104,8 @@ def _serialize(memory: models.MemoryItem) -> dict:
     return {
         "id": memory.id,
         "patient_id": memory.patient_id,
-        "title": memory.title,
+        "title": (memory.title or memory.related_person_name or "").strip()
+        or "Personal memory",
         "description": memory.description,
         "related_person_name": memory.related_person_name,
         "related_person_relation": memory.related_person_relation,
@@ -170,7 +171,7 @@ def _get_owned_memory(
 
 @router.post("/upload", response_model=schemas.MemoryItemSchema)
 async def upload_personal_memory(
-    title: str = Form(...),
+    title: Optional[str] = Form(None),
     patient_id: int = Form(...),
     caretaker_email: str = Form(...),
     memory_type: str = Form("specific"),  # "specific" | "general"
@@ -219,10 +220,13 @@ async def upload_personal_memory(
     # 3. Persist.
     rname = (related_person_name or "").strip() or None
     rrel = (related_person_relation or "").strip() or None
+    title_clean = (title or "").strip() or None
+    if not title_clean and rname:
+        title_clean = rname
 
     memory = models.MemoryItem(
         patient_id=patient_id,
-        title=title.strip(),
+        title=title_clean,
         description=(description or "").strip() or None,
         related_person_name=rname,
         related_person_relation=rrel,

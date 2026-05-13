@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from sqlalchemy import and_, func, or_, tuple_
+from sqlalchemy import and_, delete, func, or_, tuple_
 from sqlalchemy.orm import Session
 
 import models
@@ -21,6 +21,7 @@ from data.generic_memory_library import (
     is_safe_library_segment,
 )
 from database import get_db
+from routers.ai_training import predict_face_name_from_image_path
 from routers.memory_catalog import (
     _patient_auth as _catalog_patient_auth,
     generic_topic_image_counts,
@@ -265,6 +266,38 @@ def _memory_to_gallery_dict(m: models.MemoryItem) -> Dict[str, Any]:
     }
 
 
+def _quiz_display_title(m: models.MemoryItem) -> str:
+    t = (m.title or "").strip() or "Untitled"
+    if (m.library_type or "") == "generic":
+        mt = _generic_manifest_title_for_memory(m)
+        if mt:
+            t = (mt or "").strip() or t
+    return t or "Untitled"
+
+
+def _quiz_choice_label(m: models.MemoryItem) -> str:
+    """Multiple-choice label: personal memories use the person's name; generic uses catalog title."""
+    if (m.library_type or "").lower() == "personal":
+        n = (getattr(m, "related_person_name", None) or "").strip()
+        if n:
+            return n
+    return _quiz_display_title(m)
+
+
+def _quiz_question_item_min(m: models.MemoryItem) -> Dict[str, Any]:
+    """Minimal fields for quiz UI (no location/description spoilers)."""
+    return {
+        "id": int(m.id),
+        "title": _quiz_display_title(m),
+        "quiz_answer": _quiz_choice_label(m),
+        "name": (getattr(m, "related_person_name", None) or "").strip() or None,
+        "file_path": m.file_path,
+        "category": m.category or "image",
+        "library_type": m.library_type,
+        "related_person_name": getattr(m, "related_person_name", None),
+    }
+
+
 def _training_image_count(mems: List[models.MemoryItem]) -> int:
     return sum(
         1
@@ -284,7 +317,25 @@ def _slug_segment(label: str) -> str:
     return s or "custom"
 
 
-def _eligible_memories_query(db: Session, patient_id: int):
+def _memory_all_file_paths(m: models.MemoryItem) -> List[str]:
+    """Primary + extra paths for a memory (same idea as memory_personal._all_file_paths)."""
+    out: List[str] = []
+    if m.file_path:
+        out.append(m.file_path)
+    raw = getattr(m, "extra_file_paths", None)
+    if raw:
+        try:
+            extra = json.loads(raw)
+            if isinstance(extra, list):
+                for p in extra:
+                    if isinstance(p, str) and p.strip():
+                        out.append(p.strip())
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return out
+
+
+def _eligible_memories_base_query(db: Session, patient_id: int):
     """Memories visible to a patient = primary + shared + generic (starter + purchased)."""
     patient = (
         db.query(models.Patient)
@@ -347,6 +398,60 @@ def _eligible_memories_query(db: Session, patient_id: int):
         (models.MemoryItem.patient_id == patient_id)
         | (models.MemoryItem.id.in_(shared_subq))
         | generic_ok,
+    )
+
+
+def _dismissed_library_memory_ids(db: Session, patient_id: int) -> Set[int]:
+    rows = (
+        db.query(models.PatientDismissedLibraryMemory.memory_item_id)
+        .filter(models.PatientDismissedLibraryMemory.patient_id == patient_id)
+        .all()
+    )
+    return {int(r[0]) for r in rows if r[0] is not None}
+
+
+def _eligible_memories_query(db: Session, patient_id: int):
+    """Same as base, but hide generic library rows the patient removed during training."""
+    q = _eligible_memories_base_query(db, patient_id)
+    hidden_ids = _dismissed_library_memory_ids(db, patient_id)
+    if hidden_ids:
+        q = q.filter(~models.MemoryItem.id.in_(list(hidden_ids)))
+    return q
+
+
+def _purchased_only_generic_memories_query(db: Session, patient_id: int):
+    """Generic library rows only from bundles this patient has purchased (unlocked)."""
+    patient = (
+        db.query(models.Patient)
+        .filter(models.Patient.id == patient_id)
+        .first()
+    )
+    if not patient:
+        return db.query(models.MemoryItem).filter(models.MemoryItem.id == -1)
+
+    ce = patient.caretaker_email or ""
+    purchase_rows = (
+        db.query(
+            models.CaretakerBundlePurchase.library_topic,
+            models.CaretakerBundlePurchase.library_collection_slug,
+        )
+        .filter(
+            models.CaretakerBundlePurchase.patient_id == patient_id,
+            models.CaretakerBundlePurchase.caretaker_email == ce,
+            models.CaretakerBundlePurchase.locked.is_(False),
+        )
+        .all()
+    )
+    purchase_tuples = [(a, b) for a, b in purchase_rows if a and b is not None]
+    if not purchase_tuples:
+        return db.query(models.MemoryItem).filter(models.MemoryItem.id == -1)
+
+    return db.query(models.MemoryItem).filter(
+        models.MemoryItem.library_type == "generic",
+        tuple_(
+            models.MemoryItem.library_topic,
+            models.MemoryItem.library_collection_slug,
+        ).in_(list(purchase_tuples)),
     )
 
 
@@ -483,6 +588,106 @@ def get_patient_training_gallery(
             rows = filtered
 
     return [_memory_to_gallery_dict(m) for m in rows]
+
+
+@router.delete(
+    "/patient-training-memory/{patient_id}/{memory_id}",
+    response_model=schemas.PatientTrainingMemoryDeleteResponse,
+)
+def delete_memory_during_patient_training(
+    patient_id: int,
+    memory_id: int,
+    passcode: Optional[str] = Query(None),
+    qr_token: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Patient removes a disturbing item: hide generic library images, delete own personal
+    uploads, or drop shared personal access. Requires passcode or QR token."""
+    _catalog_patient_auth(db, patient_id, passcode, qr_token)
+    mem = (
+        _eligible_memories_base_query(db, patient_id)
+        .filter(models.MemoryItem.id == memory_id)
+        .first()
+    )
+    if not mem:
+        raise HTTPException(
+            status_code=404,
+            detail="Memory not found or not available to you.",
+        )
+
+    db.query(models.PatientQuizMemoryItem).filter(
+        models.PatientQuizMemoryItem.patient_id == patient_id,
+        models.PatientQuizMemoryItem.memory_item_id == memory_id,
+    ).delete(synchronize_session=False)
+
+    lt = (mem.library_type or "").lower()
+    if lt == "generic":
+        exists = (
+            db.query(models.PatientDismissedLibraryMemory)
+            .filter(
+                models.PatientDismissedLibraryMemory.patient_id == patient_id,
+                models.PatientDismissedLibraryMemory.memory_item_id == memory_id,
+            )
+            .first()
+        )
+        if not exists:
+            db.add(
+                models.PatientDismissedLibraryMemory(
+                    patient_id=patient_id,
+                    memory_item_id=memory_id,
+                )
+            )
+        db.commit()
+        return schemas.PatientTrainingMemoryDeleteResponse(
+            status="ok",
+            action="dismissed_library",
+        )
+
+    if lt != "personal":
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="This memory type cannot be removed here.",
+        )
+
+    if mem.patient_id == patient_id:
+        paths = _memory_all_file_paths(mem)
+        db.delete(mem)
+        db.commit()
+        for p in paths:
+            if not p:
+                continue
+            abs_p = media_path(p)
+            if abs_p.is_file():
+                try:
+                    abs_p.unlink()
+                except OSError:
+                    pass
+        return schemas.PatientTrainingMemoryDeleteResponse(
+            status="ok",
+            action="deleted_personal",
+        )
+
+    res = db.execute(
+        delete(models.memory_patient_access).where(
+            and_(
+                models.memory_patient_access.c.memory_id == memory_id,
+                models.memory_patient_access.c.patient_id == patient_id,
+            )
+        )
+    )
+    rc = getattr(res, "rowcount", None)
+    if rc is not None and rc < 1:
+        db.rollback()
+        raise HTTPException(
+            status_code=404,
+            detail="Could not remove access to this memory.",
+        )
+    db.commit()
+    return schemas.PatientTrainingMemoryDeleteResponse(
+        status="ok",
+        action="removed_shared_access",
+    )
 
 
 @router.get("/all/{patient_id}")
@@ -657,6 +862,90 @@ async def get_memory_quiz(
 
     excluded_list = [int(i) for i in exclude_ids.split(",") if i.strip().isdigit()]
 
+    # --- Caretaker-built fixed-length quiz (replaces random pool when complete) ---
+    dq = (
+        db.query(models.CaretakerDefinedQuiz)
+        .filter(models.CaretakerDefinedQuiz.patient_id == patient_id)
+        .first()
+    )
+    n_slots = int(models.DEFINED_QUIZ_QUESTION_SLOTS)
+    if dq:
+        questions = (
+            db.query(models.CaretakerDefinedQuizQuestion)
+            .filter(models.CaretakerDefinedQuizQuestion.quiz_id == dq.id)
+            .order_by(models.CaretakerDefinedQuizQuestion.slot.asc())
+            .all()
+        )
+        if len(questions) == n_slots:
+            dismissed = _dismissed_library_memory_ids(db, patient_id)
+            remaining = [
+                q
+                for q in questions
+                if q.memory_item_id not in excluded_list
+                and q.memory_item_id not in dismissed
+            ]
+            if not remaining:
+                return {
+                    "status": "finished",
+                    "message": "Quiz complete!",
+                    "quiz_format": "caretaker_defined",
+                    "required_correct_total": n_slots,
+                }
+            qrow = remaining[0]
+            mem = (
+                db.query(models.MemoryItem)
+                .filter(models.MemoryItem.id == qrow.memory_item_id)
+                .first()
+            )
+            if not mem:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Quiz configuration error: memory missing",
+                )
+            correct = _quiz_choice_label(mem)
+            w1 = (qrow.wrong_option_1 or "").strip()
+            w2 = (qrow.wrong_option_2 or "").strip()
+            w3 = (qrow.wrong_option_3 or "").strip()
+            opts: List[str] = []
+            if qrow.mc_options_json:
+                try:
+                    four = json.loads(qrow.mc_options_json)
+                    if isinstance(four, list) and len(four) == 4:
+                        opts = [str(x or "").strip() or "—" for x in four]
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    opts = []
+            if len(opts) != 4:
+                opts = [correct, w1, w2, w3]
+            random.shuffle(opts)
+            is_personal = (mem.library_type or "").lower() == "personal"
+            qi = _quiz_question_item_min(mem)
+            if (
+                len(opts) == 4
+                and qrow.mc_options_json
+                and qrow.correct_option_index is not None
+            ):
+                try:
+                    fo_raw = json.loads(qrow.mc_options_json)
+                    if isinstance(fo_raw, list):
+                        ix = int(qrow.correct_option_index)
+                        if 0 <= ix < len(fo_raw):
+                            mc_ans = str(fo_raw[ix] or "").strip()
+                            qi = {
+                                **qi,
+                                "quiz_answer": mc_ans or qi["quiz_answer"],
+                                "title": mc_ans or qi["title"],
+                            }
+                except (json.JSONDecodeError, TypeError, ValueError, IndexError):
+                    pass
+            return {
+                "status": "ongoing",
+                "quiz_format": "caretaker_defined",
+                "required_correct_total": n_slots,
+                "requires_face_verify": is_personal,
+                "question_item": qi,
+                "shuffled_options": opts,
+            }
+
     base_query = _eligible_memories_query(db, patient_id)
 
     pool_rows = (
@@ -672,40 +961,205 @@ async def get_memory_quiz(
         models.MemoryItem.id.not_in(excluded_list),
     ).all()
 
-    if not available_memories:
-        return {"status": "finished", "message": "All items completed!"}
+    tgt = int(models.LEGACY_QUIZ_TARGET_CORRECT)
 
-    correct_item = random.choice(available_memories)
+    if not available_memories:
+        return {
+            "status": "finished",
+            "message": "All items completed!",
+            "quiz_format": "legacy_pool",
+            "required_correct_total": tgt,
+        }
+
+    personal_avail = [
+        m
+        for m in available_memories
+        if (m.library_type or "").lower() == "personal"
+    ]
+    generic_avail = [
+        m
+        for m in available_memories
+        if (m.library_type or "").lower() == "generic"
+    ]
+    if personal_avail and generic_avail:
+        if random.random() < 0.45:
+            correct_item = random.choice(personal_avail)
+        else:
+            correct_item = random.choice(generic_avail)
+    elif personal_avail:
+        correct_item = random.choice(personal_avail)
+    elif generic_avail:
+        correct_item = random.choice(generic_avail)
+    else:
+        correct_item = random.choice(available_memories)
 
     all_memories = base_query.all()
-    other_titles = list(
-        {m.title for m in all_memories if m.title and m.title != correct_item.title},
+    correct_label = _quiz_choice_label(correct_item)
+    other_labels = list(
+        {
+            _quiz_choice_label(m)
+            for m in all_memories
+            if _quiz_choice_label(m) != correct_label
+        },
     )
 
-    if len(other_titles) < 3:
+    if len(other_labels) < 3:
         raise HTTPException(
             status_code=400,
-            detail="Not enough unique memory titles to generate multiple choices.",
+            detail="Not enough unique names or titles to build quiz choices.",
         )
 
-    distractors = random.sample(other_titles, 3)
-    shuffled_options = distractors + [correct_item.title]
+    distractors = random.sample(other_labels, 3)
+    shuffled_options = distractors + [correct_label]
     random.shuffle(shuffled_options)
 
+    is_personal = (correct_item.library_type or "").lower() == "personal"
     return {
         "status": "ongoing",
-        "question_item": {
-            "id": correct_item.id,
-            "title": correct_item.title,
-            "location": correct_item.location,
-            "description": correct_item.description,
-            "file_path": correct_item.file_path,
-            "category": correct_item.category,
-            "library_type": correct_item.library_type,
-            "library_topic": getattr(correct_item, "library_topic", None),
-            "library_collection_slug": getattr(
-                correct_item, "library_collection_slug", None
-            ),
-        },
+        "quiz_format": "legacy_pool",
+        "required_correct_total": tgt,
+        "requires_face_verify": is_personal,
+        "question_item": _quiz_question_item_min(correct_item),
         "shuffled_options": shuffled_options,
     }
+
+
+@router.post(
+    "/quiz/{patient_id}/record-attempt",
+    response_model=schemas.QuizAttemptRecordOut,
+)
+def record_quiz_attempt_finish(
+    patient_id: int,
+    body: schemas.QuizAttemptRecordIn,
+    passcode: Optional[str] = Query(None),
+    qr_token: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Persist quiz score; on a passing round reset training sessions so the patient
+    completes gentle training again before the next quiz."""
+    p = _catalog_patient_auth(db, patient_id, passcode, qr_token)
+    target = max(1, int(body.target_score))
+    correct = max(0, int(body.correct_count))
+    wrong = max(0, int(body.wrong_count or 0))
+    passed = correct >= target
+    fmt = (body.quiz_format or "legacy_pool").strip()[:40] or "legacy_pool"
+    row = models.PatientQuizAttempt(
+        patient_id=patient_id,
+        quiz_format=fmt,
+        correct_count=correct,
+        wrong_count=wrong,
+        target_score=target,
+        passed=passed,
+    )
+    db.add(row)
+    db.flush()
+    reset = False
+    if passed:
+        p.training_sessions_completed = 0
+        reset = True
+    db.commit()
+    return schemas.QuizAttemptRecordOut(
+        id=int(row.id),
+        training_sessions_reset=reset,
+    )
+
+
+def _norm_quiz_label(s: Optional[str]) -> str:
+    return " ".join((s or "").split()).casefold()
+
+
+@router.post(
+    "/quiz/{patient_id}/verify-personal-face",
+    response_model=schemas.QuizPersonalFaceVerifyOut,
+)
+async def verify_personal_quiz_face(
+    patient_id: int,
+    body: schemas.QuizPersonalFaceVerifyIn,
+    passcode: Optional[str] = Query(None),
+    qr_token: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """For personal quiz images: face embedding must match the name the patient selected."""
+    _catalog_patient_auth(db, patient_id, passcode, qr_token)
+    mem = (
+        db.query(models.MemoryItem)
+        .filter(models.MemoryItem.id == body.memory_item_id)
+        .first()
+    )
+    if not mem:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    if (mem.library_type or "").lower() != "personal":
+        return schemas.QuizPersonalFaceVerifyOut(
+            ok=False,
+            detail="Face check only applies to personal photos.",
+            confidence=0.0,
+        )
+
+    correct_label = _quiz_choice_label(mem)
+    dq = (
+        db.query(models.CaretakerDefinedQuiz)
+        .filter(models.CaretakerDefinedQuiz.patient_id == patient_id)
+        .first()
+    )
+    if dq:
+        qq = (
+            db.query(models.CaretakerDefinedQuizQuestion)
+            .filter(
+                models.CaretakerDefinedQuizQuestion.quiz_id == dq.id,
+                models.CaretakerDefinedQuizQuestion.memory_item_id == body.memory_item_id,
+            )
+            .first()
+        )
+        if qq and qq.mc_options_json:
+            try:
+                opts = json.loads(qq.mc_options_json)
+                if (
+                    isinstance(opts, list)
+                    and len(opts) == 4
+                    and qq.correct_option_index is not None
+                    and 0 <= int(qq.correct_option_index) < 4
+                ):
+                    correct_label = (opts[int(qq.correct_option_index)] or "").strip()
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+    sel = (body.selected_label or "").strip()
+    if _norm_quiz_label(sel) != _norm_quiz_label(correct_label):
+        return schemas.QuizPersonalFaceVerifyOut(
+            ok=False,
+            detail="That choice does not match the correct answer for this question.",
+            confidence=0.0,
+        )
+
+    fp = mem.file_path or ""
+    abs_p = media_path(fp) if fp else None
+    if not abs_p or not abs_p.is_file():
+        return schemas.QuizPersonalFaceVerifyOut(
+            ok=False,
+            detail="Image file is missing on the server.",
+            confidence=0.0,
+        )
+
+    pred, conf = predict_face_name_from_image_path(str(abs_p))
+    if not pred:
+        return schemas.QuizPersonalFaceVerifyOut(
+            ok=False,
+            predicted_name=None,
+            confidence=round(conf, 4),
+            detail="No face match. Add clearer personal training photos or try again.",
+        )
+
+    if _norm_quiz_label(pred) != _norm_quiz_label(sel):
+        return schemas.QuizPersonalFaceVerifyOut(
+            ok=False,
+            predicted_name=pred,
+            confidence=round(conf, 4),
+            detail=f"The face looks like “{pred}”, which does not match your choice.",
+        )
+
+    return schemas.QuizPersonalFaceVerifyOut(
+        ok=True,
+        predicted_name=pred,
+        confidence=round(conf, 4),
+        detail="Face and answer match.",
+    )

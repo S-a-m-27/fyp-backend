@@ -1,0 +1,56 @@
+{
+
+  "__bundle__": {
+    "price": "free"
+  },
+  "11.png": {
+    "title": "The Thin Red Line",
+    "location": "Waterloo, Belgium, 1815",
+    "description": "A dramatic low-angle photograph of a chaotic battle scene from the Napoleonic Wars. A line of British redcoat infantrymen stands firm in a shallow trench, their muskets leveled and firing. Smoke from the black powder obscures the background, where waves of French cavalry, horses and riders in dark uniforms, are charging towards them. Debris, broken wood, and artillery impact craters litter the muddy foreground."
+  },
+  "12.png": {
+    "title": "Aegis Patrol",
+    "location": "Arid Zone, 2042",
+    "description": "In a conflict defined by advanced technology, a colossal bipedal mech, heavily weathered and sand-stained, patrols a vast, sun-baked desert canyon. Drones provide aerial cover while distant plumes of smoke hint at distant engagements. The scale of the machine dwarfs the rocky landscape."
+  },
+  "13.png": {
+    "title": "Misty Trench Vigil",
+    "location": "Western Front, 1917",
+    "description": "A low-light, atmospheric photograph from deep inside a muddy trench on the Western Front, 1917. A single, weary British soldier, helmeted and wrapped in a thick greatcoat, sits on a fire step, looking into the impenetrable fog of No Man's Land through a small periscope. Bare, shattered tree stumps rise like ghosts from the misty, cratered landscape beyond."
+  },
+  "14.png": {
+    "title": "Arctic Convoy",
+    "location": "North Atlantic, 1943",
+    "description": "A wide-angle, cold-palette photograph captured from the deck of a weathered Royal Navy destroyer navigating icy, storm-tossed waters. A naval convoy of merchant ships stretches across the horizon under a moody, heavy gray sky. The air is frigid and clear. A large merchant vessel struggles through the swell."
+  },
+  "15.png": {
+    "title": "Jungle Green Hell",
+    "location": "Southeast Asia, 1968",
+    "description": "A close-up, low-angle photograph capturing the claustrophobic reality of jungle warfare. A squad of infantrymen move cautiously through thick, vibrant green tropical foliage. The humid air is thick with moisture and gunsmoke. Rain saturates the environment, slicking leaves and pooling in the muddy path."
+  },
+  "16.png": {
+    "title": "Ruined City Sunset",
+    "location": "Stalingrad, 1943",
+    "description": "A wide, devastating panoramic vista of a city reduced to rubble. The sun sets, casting a deep, bloody orange glow over the skeletal remains of factory buildings and apartment blocks. Debris littering the foreground frames the immense scale of destruction. A lone T-34 tank sits silently amidst the devastation."
+  },
+  "17.png": {
+    "title": "Modern Urban Firefight",
+    "location": "Middle East, 2018",
+    "description": "A close-up, kinetic action shot capturing a squad of modern infantrymen engaged in a firefight within a war-torn city. Concrete dust fills the air, catching the bright daylight. A soldier fires a belt-fed machine gun from behind a low concrete wall, casings ejecting, while a comrade provides cover."
+  },
+  "18.png": {
+    "title": "Mountain Convoy Ambush",
+    "location": "Afghanistan, 2010",
+    "description": "A high-altitude, wide-angle landscape photograph capturing a military convoy being ambushed in a jagged mountain pass. Distant explosions and trails of grey smoke disrupts``` the serene environment. Soldiers are dismounting and taking cover among the massive boulders. The immense scale of the barren peaks dwarfs the localized violence."
+  },
+  "19.png": {
+    "title": "Medevac Under Fire",
+    "location": "Vietnam, 1967",
+    "description": "A kinetic close-up photograph captured in a muddy, rain-saturated landing zone. A weathered UH-1 Huey helicopter, rotors blurring the humid air and kicking up muck, dominates the upper frame. Soldiers, expressions raw with exertion, rush a wounded comrade on a litter towards the aircraft while thick green smoke provides concealment."
+  },
+  "20.png": {
+    "title": "Ancient Phalanx",
+    "location": "Greece, 431 BCE",
+    "description": "A wide, sun-drenched panoramic photograph capturing two massive Greek phalanxes colliding on a dusty plain. A forest of long sarissa pikes dominates the upper frame. Shields clash, dust billows, and the monumental scale of the interlocking formations highlights the ancient, grinding reality of shock infantry combat."
+  }
+}

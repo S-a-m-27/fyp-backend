@@ -1,0 +1,56 @@
+{
+  "__bundle__": {
+    "price": 12.00,
+    "currency": "USD"
+  },
+  "1.png": {
+    "title": "Desert Interceptor",
+    "location": "Mojave Desert, USA",
+    "description": "A deep red, metallic naked street motorcycle with a matte black frame and minimal bodywork exposing the engine, parked on cracked asphalt with heat haze rising in the background."
+  },
+  "2.png": {
+    "title": "Neon Shibuya Strike",
+    "location": "Shibuya Crossing, Tokyo, Japan",
+    "description": "Two modern naked bikes, one blue and one grey, navigating the rain-slicked intersections of Shibuya at night under intense neon billboard lighting."
+  },
+  "3.png": {
+    "title": "Cotswold Cafe Racer",
+    "location": "Cotswolds, United Kingdom",
+    "description": "A vintage, custom naked cafe racer with a polished aluminum tank and leather seat, parked on a cobblestone street in a historic English village."
+  },
+  "4.png": {
+    "title": "Hyper-Naked Alp Attack",
+    "location": "Stelvio Pass, Italy",
+    "description": "A hyper-naked sports motorcycle with an exposed blue trellis frame captured mid-lean while navigating a sharp mountain hairpin turn in the Alps."
+  },
+  "5.png": {
+    "title": "Pacific Coast Cruiser",
+    "location": "Big Sur, California, USA",
+    "description": "A dark bronze modern naked power cruiser parked at sunset on a cliffside overlooking the Pacific Ocean and the Bixby Creek Bridge."
+  },
+  "6.png": {
+    "title": "Route 66 Streetfighter",
+    "location": "Route 66, Arizona, USA",
+    "description": "A customized naked streetfighter with an exposed trellis frame in matte gray and orange, parked near an abandoned desert structure."
+  },
+  "7.png": {
+    "title": "Scandinavian Sport-Tourer",
+    "location": "Atlantic Ocean Road, Norway",
+    "description": "A modern naked sport-touring bike with small panniers parked on a scenic coastal bridge at sunset over the North Sea."
+  },
+  "8.png": {
+    "title": "Concept Exoskeleton",
+    "location": "Design Workshop",
+    "description": "A minimal naked concept bike featuring a polished titanium exoskeleton and an exposed electric powertrain on a fabrication table."
+  },
+  "9.png": {
+    "title": "Monte Carlo Twilight Muscle",
+    "location": "Monte Carlo, Monaco",
+    "description": "A blacked-out naked muscle bike parked at twilight in front of the illuminated Casino de Monte-Carlo."
+  },
+  "10.png": {
+    "title": "Desert Electric Drag",
+    "location": "Mojave Salt Flats, USA",
+    "description": "A futuristic naked electric drag bike with a raw titanium lattice frame performing a high-speed run on vast, dusty salt flats."
+  }
+}

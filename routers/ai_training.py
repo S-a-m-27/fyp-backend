@@ -121,6 +121,56 @@ def train_faces_from_paths(
     }
 
 
+def predict_face_name_from_image_path(abs_image_path: str) -> tuple[Optional[str], float]:
+    """Best-effort name from ``memory_bank`` embeddings (same layout as ``/ai/test``)."""
+    if not abs_image_path or not os.path.isfile(abs_image_path):
+        return None, 0.0
+    if not os.path.isdir(STORAGE_DIR):
+        return None, 0.0
+    npy_files = [f for f in os.listdir(STORAGE_DIR) if f.endswith(".npy")]
+    if not npy_files:
+        return None, 0.0
+    try:
+        test_results = DeepFace.represent(
+            img_path=abs_image_path,
+            model_name="Facenet",
+            enforce_detection=False,
+            detector_backend="retinaface",
+            align=True,
+        )
+    except Exception:
+        return None, 0.0
+    if not test_results:
+        return None, 0.0
+    face = test_results[0]
+    test_embedding = np.array(face["embedding"])
+    best_match: Optional[str] = None
+    highest_similarity = -1.0
+    for filename in npy_files:
+        try:
+            stored = np.load(os.path.join(STORAGE_DIR, filename))
+            similarity = float(
+                np.dot(test_embedding, stored)
+                / (
+                    np.linalg.norm(test_embedding) * np.linalg.norm(stored) + 1e-9
+                ),
+            )
+            if similarity > highest_similarity:
+                highest_similarity = similarity
+                best_match = filename
+        except Exception:
+            continue
+    if best_match is None or highest_similarity < 0.55:
+        return None, float(highest_similarity)
+    stem = best_match.replace(".npy", "")
+    if "_" in stem:
+        name_part, _rel = stem.rsplit("_", 1)
+    else:
+        name_part = stem
+    display = name_part.replace("_", " ").strip().title()
+    return display, float(highest_similarity)
+
+
 @router.post("/train")
 async def train_person(
     name: str = Form(...),

@@ -37,6 +37,12 @@ memory_patient_access = Table(
 )
 
 
+# Caretaker-defined quiz length (keep in sync with patient app + caretaker UI).
+DEFINED_QUIZ_QUESTION_SLOTS = 10
+# Legacy pool quiz: number of correct answers required to finish one round.
+LEGACY_QUIZ_TARGET_CORRECT = 10
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -189,6 +195,112 @@ class PatientQuizMemoryItem(Base):
         index=True,
     )
     created_at = Column(DateTime, default=func.now())
+
+
+class PatientDismissedLibraryMemory(Base):
+    """Generic library images this patient chose to hide (not deleted from catalog)."""
+
+    __tablename__ = "patient_dismissed_library_memories"
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "memory_item_id",
+            name="uq_patient_dismissed_library_memory",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    memory_item_id = Column(
+        Integer,
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime, default=func.now())
+
+
+class PatientQuizAttempt(Base):
+    """One completed quiz round from the patient app (scores + format)."""
+
+    __tablename__ = "patient_quiz_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    quiz_format = Column(String(40), nullable=False)
+    correct_count = Column(Integer, nullable=False)
+    wrong_count = Column(Integer, nullable=False, default=0)
+    target_score = Column(Integer, nullable=False)
+    passed = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=func.now())
+
+
+class CaretakerDefinedQuiz(Base):
+    """One caretaker-built fixed-length quiz per patient (replaces random quiz when complete)."""
+
+    __tablename__ = "caretaker_defined_quizzes"
+    __table_args__ = (
+        UniqueConstraint("patient_id", name="uq_caretaker_defined_quiz_patient"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    caretaker_email = Column(String(255), nullable=False, index=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    questions = relationship(
+        "CaretakerDefinedQuizQuestion",
+        back_populates="quiz",
+        cascade="all, delete-orphan",
+    )
+
+
+class CaretakerDefinedQuizQuestion(Base):
+    """One slot in a caretaker-defined quiz: image from memory_item + MC options."""
+
+    __tablename__ = "caretaker_defined_quiz_questions"
+    __table_args__ = (
+        UniqueConstraint("quiz_id", "slot", name="uq_defined_quiz_question_slot"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    quiz_id = Column(
+        Integer,
+        ForeignKey("caretaker_defined_quizzes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    slot = Column(Integer, nullable=False)  # 1..8
+    memory_item_id = Column(
+        Integer,
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    wrong_option_1 = Column(String(500), nullable=False)
+    wrong_option_2 = Column(String(500), nullable=False)
+    wrong_option_3 = Column(String(500), nullable=False)
+    # Optional: exactly four caption choices + index of correct (personal quick-quiz UI).
+    mc_options_json = Column(Text, nullable=True)
+    correct_option_index = Column(Integer, nullable=True)
+
+    quiz = relationship("CaretakerDefinedQuiz", back_populates="questions")
 
 
 class MemoryImageRating(Base):

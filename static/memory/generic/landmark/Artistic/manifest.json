@@ -1,0 +1,56 @@
+{
+"__bundle__": {
+  "price": 10.00,
+  "currency": "USD"
+},
+  "Red Dune sea.png": {
+    "title": "The Red Dune Sea",
+    "location": "Namib-Naukluft National Park, Namibia",
+    "description": "This image features the monumental star dunes of the Namib Desert, sculpted by the wind into sharp crests. The sand glows deep apricot under the low afternoon sun. A lone gemsbok (oryx) walks along the base of a massive dune, highlighting the immense scale and arid solitude of the oldest desert on Earth."
+  },
+  "Misty mountain spires.png": {
+    "title": "Misty Mountain Spires",
+    "location": "Zhangjiajie National Forest Park, Hunan, China",
+    "description": "This dramatic vista shows the karst landscape that inspired Avatar. Hundreds of towering quartzite sandstone pillars rise abruptly from a dense subtropical forest. Thick mist swirls through the deep ravines, partially obscuring the bases of the pillars, while a small, narrow stone bridge is visible, connecting two distant spires"
+  },
+  "Lava field track.png": {
+    "title": "The Lava Field Track",
+    "location": "Highlands of Iceland",
+    "description": "A remote and rugged landscape in the Icelandic Highlands. A winding gravel track disappears into a vast field of dark, moss-covered lava rock (Laki eruption field). The scene is dramatic under a stormy sky, with distant, snow-patched volcanic peaks and a solitary green off-road vehicle navigating the wilderness."
+  },
+  "Terraced emerald hills.png": {
+    "title": "Terraced emerald hills",
+    "location": "Mu Cang Chai, Yen Bai Province, Vietnam",
+    "description": "A breathtaking landscape of sculpted rice terraces carved into the steep mountainsides of Northern Vietnam. During the 'pouring water' season, the terraced paddies act as mirrors, reflecting the soft light of golden hour. The vibrant green steps curve naturally, following the contours of the hills, leading towards a small Hmong village tucked in the valley."
+  },
+  "The Granite Cathedral.png": {
+    "title": "The Granite Cathedral",
+    "location": "Yosemite National Park, California, USA",
+    "description": "A classic panoramic view of Yosemite Valley from Tunnel View. The massive granite monolith of El Capitan stands vertically on the left, opposing the sheer face of Half Dome in the distance. The Merced River winds through dense pine forests on the valley floor, illuminated by soft afternoon light breaking through scattered clouds."
+  },
+  "The Lunar Canyon.png": {
+    "title": "The Lunar Canyon",
+    "location": "Wadi Rum Protected Area, Jordan",
+    "description": "A dramatic, alien-like landscape in the Jordanian desert. Massive sandstone and granite mountains rise abruptly from red desert sand. The canyon walls show intricate erosion. The image captures the 'Seven Pillars of Wisdom' rock formation under a clear, pale blue sky, with a lone Bedouin figure leading a camel along the sandy floor, emphasizing the vast, ancient solitude."
+  },
+   "The Rainbow Range.png": {
+    "title": "The Rainbow Range",
+    "location": "Zhangye National Geopark, Gansu, China",
+    "description": "This surreal landscape showcases the Danxia landform, where rolling mountains are painted with brilliant, alternating stripes of terracotta, yellow, green, and blue minerals. The image captures the sunrise, which intensifies the natural pigments. A narrow boardwalk curves along a ridge, providing a sense of scale against the vast, kaleidoscopic hills that look like a painted canvas."
+  },
+   "The Tuscan Roll.png": {
+    "title": "The Tuscan Roll",
+    "location": "Val d'Orcia, Tuscany, Italy",
+    "description": "A quintessential, pastoral landscape of the Val d'Orcia, a UNESCO World Heritage site. Golden-green undulating hills are punctuated by characteristic dark cypress trees. A winding, white dirt road (strada bianca) leads the eye to a classic stone farmhouse (agriturismo) perched on a hilltop. The soft, warm light of the golden hour creates a tranquil, timeless atmosphere."
+  },
+   "Ancient Ice and Rock.png": {
+    "title": "Ancient Ice and Rock",
+    "location": "Jökulsárlón Glacier Lagoon, Iceland",
+    "description": "A Scene of  ancient ice and rocks"
+  },
+    "The Glacial Mirror.png": {
+    "title": "The Glacial Mirror",
+    "location": "Torres del Paine, Patagonia, Chile",
+    "description": "This scene captures the jagged granite peaks of the Cordillera Paine massif reflected perfectly in the glassy surface of Lago Nordenskjöld. A scattering of orange and blue kayaks rests on the pebbled shore in the foreground, ready for a journey. The air is crisp, and a light dusting of snow covers the distant, ancient ice."
+  }
+}

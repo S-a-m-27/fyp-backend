@@ -153,9 +153,29 @@ class PatientTrainingCompleteRequest(BaseModel):
     qr_token: Optional[str] = None
 
 
+class PatientTrainingMemoryDeleteResponse(BaseModel):
+    status: str = "ok"
+    action: str  # dismissed_library | deleted_personal | removed_shared_access
+
+
 class PatientTrainingCompleteResponse(BaseModel):
     status: str
     memory_training_completed: bool
+
+
+class QuizAttemptRecordIn(BaseModel):
+    """Patient-submitted summary when they finish a quiz round."""
+
+    quiz_format: str  # caretaker_defined | legacy_pool
+    correct_count: int
+    wrong_count: int = 0
+    target_score: int
+
+
+class QuizAttemptRecordOut(BaseModel):
+    status: str = "ok"
+    id: int
+    training_sessions_reset: bool = False
 
 
 class PatientWellnessIntroCompleteRequest(BaseModel):
@@ -293,6 +313,82 @@ class QuizPoolStateResponse(BaseModel):
 class QuizPoolPutResponse(BaseModel):
     status: str = "ok"
     count: int
+
+
+# ---------- Caretaker-defined fixed-length quiz ----------
+
+
+class DefinedQuizQuestionSlot(BaseModel):
+    """One slot: legacy (title + 3 wrong) or four-option card (personal quick-add)."""
+
+    slot: int  # 1..10 (see models.DEFINED_QUIZ_QUESTION_SLOTS)
+    memory_item_id: int
+    wrong_option_1: Optional[str] = None
+    wrong_option_2: Optional[str] = None
+    wrong_option_3: Optional[str] = None
+    four_options: Optional[List[str]] = None
+    correct_option_index: Optional[int] = None  # 0..3 when four_options set
+
+
+class DefinedQuizPutRequest(BaseModel):
+    questions: List[DefinedQuizQuestionSlot]
+
+
+class DefinedQuizSlotState(BaseModel):
+    slot: int
+    memory_item_id: Optional[int] = None
+    correct_title: Optional[str] = None
+    file_path: Optional[str] = None
+    library_type: Optional[str] = None
+    library_topic: Optional[str] = None
+    library_collection_slug: Optional[str] = None
+    wrong_option_1: Optional[str] = None
+    wrong_option_2: Optional[str] = None
+    wrong_option_3: Optional[str] = None
+    four_options: Optional[List[str]] = None
+    correct_option_index: Optional[int] = None
+
+
+class QuizPersonDefaultsResponse(BaseModel):
+    """Reuse the same person name/relation as the patient’s latest personal memory upload."""
+
+    related_person_name: str
+    related_person_relation: Optional[str] = None
+
+
+class DefinedQuizMemoryPick(BaseModel):
+    id: int
+    title: str
+    file_path: str
+    library_type: str
+    library_topic: Optional[str] = None
+    library_collection_slug: Optional[str] = None
+
+
+class DefinedQuizEditorResponse(BaseModel):
+    """Editor payload: purchased-only generic picks + personal picks + current slots."""
+
+    has_quiz: bool
+    slots: List[DefinedQuizSlotState]
+    generic_purchased_memories: List[DefinedQuizMemoryPick]
+    personal_memories: List[DefinedQuizMemoryPick]
+
+
+class DefinedQuizPutResponse(BaseModel):
+    status: str = "ok"
+    question_count: int = 10
+
+
+class QuizPersonalFaceVerifyIn(BaseModel):
+    memory_item_id: int
+    selected_label: str
+
+
+class QuizPersonalFaceVerifyOut(BaseModel):
+    ok: bool
+    predicted_name: Optional[str] = None
+    confidence: float = 0.0
+    detail: Optional[str] = None
 
 
 # ---------- Admin (wallet + purchase approval) ----------
