@@ -22,6 +22,13 @@ from data.generic_memory_library import (
     topic_exists_on_disk,
 )
 from database import get_db
+from routers.library_relevance import (
+    bundle_match_score,
+    manifest_gender_penalty,
+    parse_json_string_list,
+    profession_haystack_tokens,
+    topic_match_score,
+)
 
 router = APIRouter(prefix="/memory/catalog", tags=["Memory catalog"])
 
@@ -43,6 +50,26 @@ def generic_topic_image_counts(db: Session) -> dict[str, int]:
         .all()
     )
     return {str(r[0]): int(r[1]) for r in rows if r[0] is not None}
+
+
+def _patient_for_caretaker_catalog(
+    db: Session, caretaker_email: str, patient_id: int
+) -> models.Patient:
+    _caretaker_or_404(db, caretaker_email)
+    p = (
+        db.query(models.Patient)
+        .filter(
+            models.Patient.id == patient_id,
+            models.Patient.caretaker_email == caretaker_email,
+        )
+        .first()
+    )
+    if not p:
+        raise HTTPException(
+            status_code=404,
+            detail="Patient not found for this caretaker",
+        )
+    return p
 
 
 def _caretaker_or_404(db: Session, email: str) -> None:
@@ -96,19 +123,51 @@ def _bundle_label(slug: str) -> str:
 
 
 @router.get("/topics", response_model=List[schemas.GenericTopicInfo])
-def catalog_topics(db: Session = Depends(get_db)):
-    """Topics from on-disk folders; ``approx_count`` = generic images in DB per topic."""
+def catalog_topics(
+    db: Session = Depends(get_db),
+    email: Optional[str] = Query(
+        None,
+        description="Caretaker email (with patient_id: auth + patient-scoped topic ranking)",
+    ),
+    patient_id: Optional[int] = Query(None),
+):
+    """Topics from on-disk folders; ``approx_count`` = generic images in DB per topic.
+
+    When ``email`` and ``patient_id`` are set, topics are sorted by relevance to the
+    patient's interests/sub-interests and caretaker+patient profession keywords.
+    """
     counts = generic_topic_image_counts(db)
-    return [
-        schemas.GenericTopicInfo(
-            slug=t["slug"],
-            label=t["label"],
-            blurb=t.get("blurb") or "",
-            approx_count=counts.get(t["slug"], 0),
-            default_bundle_slug=t.get("default_bundle_slug") or "",
+    cards = discover_generic_topic_cards()
+
+    rank_patient: Optional[models.Patient] = None
+    if email and patient_id is not None:
+        rank_patient = _patient_for_caretaker_catalog(db, email, patient_id)
+
+    out: List[schemas.GenericTopicInfo] = []
+    for t in cards:
+        slug = t["slug"]
+        label = t["label"]
+        default_bs = t.get("default_bundle_slug") or ""
+        ms = 0.0
+        if rank_patient is not None:
+            interests = parse_json_string_list(rank_patient.interests)
+            sub_i = parse_json_string_list(rank_patient.sub_interests)
+            prof_toks = profession_haystack_tokens(rank_patient.profession)
+            ms = topic_match_score(slug, label, interests, sub_i, prof_toks)
+        out.append(
+            schemas.GenericTopicInfo(
+                slug=slug,
+                label=label,
+                blurb=t.get("blurb") or "",
+                approx_count=counts.get(slug, 0),
+                default_bundle_slug=default_bs,
+                match_score=round(ms, 4),
+            ),
         )
-        for t in discover_generic_topic_cards()
-    ]
+
+    if rank_patient is not None:
+        out.sort(key=lambda x: (-x.match_score, x.slug))
+    return out
 
 
 @router.get("/topics/{topic_slug}/bundles", response_model=List[schemas.CatalogBundleDetail])
@@ -179,6 +238,15 @@ def list_bundles_for_topic(
             lr = getattr(rp, "locked", None)
             locked_val = bool(lr) if lr is not None else False
             caretaker_bundle_state[rp.library_collection_slug] = {"locked": locked_val}
+
+    rank_ctx: Optional[tuple] = None
+    if email and patient_id is not None and not patient_mode:
+        rp = _patient_for_caretaker_catalog(db, email, patient_id)
+        rank_ctx = (
+            parse_json_string_list(rp.interests),
+            parse_json_string_list(rp.sub_interests),
+            (rp.gender or "").strip() or None,
+        )
 
     out: List[schemas.CatalogBundleDetail] = []
     for coll in list_bundle_slugs_on_disk(topic_slug):
@@ -253,11 +321,28 @@ def list_bundles_for_topic(
         )
         cover_path = cover_row[0] if cover_row else None
 
+        bundle_display = _bundle_label(coll)
+        bb = manifest.get("__bundle__")
+        if isinstance(bb, dict):
+            for key in ("title", "display_name", "name"):
+                tv = bb.get(key)
+                if isinstance(tv, str) and tv.strip():
+                    bundle_display = tv.strip()
+                    break
+
+        ms = 0.0
+        if rank_ctx is not None:
+            interests_l, sub_l, gend = rank_ctx
+            base = bundle_match_score(
+                coll, bundle_display, interests_l, sub_l, manifest
+            )
+            ms = float(base) * float(manifest_gender_penalty(manifest, gend))
+
         out.append(
             schemas.CatalogBundleDetail(
                 topic_slug=topic_slug,
                 bundle_slug=coll,
-                display_name=_bundle_label(coll),
+                display_name=bundle_display,
                 image_count=cnt,
                 average_rating=round(avg_f, 2),
                 rating_count=n_ratings,
@@ -267,8 +352,11 @@ def list_bundles_for_topic(
                 is_free=is_free,
                 price_cents=int(pricing.get("price_cents") or 0),
                 currency=str(pricing.get("currency") or "USD"),
+                match_score=round(ms, 4),
             ),
         )
+    if rank_ctx is not None:
+        out.sort(key=lambda b: (-b.match_score, b.bundle_slug))
     return out
 
 

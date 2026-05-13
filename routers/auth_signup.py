@@ -43,6 +43,8 @@ async def signup_patient(
     passcode: str = Form(...),
     medicalInfo: str = Form(None),
     interests: str = Form(None),    # JSON string from the frontend
+    subInterests: str = Form(None),  # JSON array: finer likes (artists, teams, eras)
+    gender: str = Form(None),
     caretaker_email: str = Form(...),
     profile_photo: UploadFile = File(None),
     db: Session = Depends(get_db),
@@ -108,6 +110,8 @@ async def signup_patient(
             passcode=passcode,
             medical_info=medicalInfo,
             interests=interests,
+            sub_interests=subInterests,
+            gender=(gender.strip() if gender and str(gender).strip() else None),
             caretaker_email=caretaker_email,
             qr_token=qr_secret,
             profile_photo_path=photo_path,
@@ -152,6 +156,7 @@ async def signup_caretaker(user_data: CaretakerCreate, db: Session = Depends(get
         email=user_data.email,
         password=hash_password(user_data.password),
         age=user_data.age,
+        profession=(user_data.profession.strip() if user_data.profession and user_data.profession.strip() else None),
     )
 
     try:

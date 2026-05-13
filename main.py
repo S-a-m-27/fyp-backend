@@ -97,6 +97,8 @@ try:
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS location VARCHAR(255);
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS medical_info TEXT;
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS interests TEXT;
+            ALTER TABLE patients ADD COLUMN IF NOT EXISTS sub_interests TEXT;
+            ALTER TABLE patients ADD COLUMN IF NOT EXISTS gender VARCHAR(32);
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS caretaker_email VARCHAR(255);
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS qr_token VARCHAR(255);
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
@@ -105,6 +107,7 @@ try:
             CREATE UNIQUE INDEX IF NOT EXISTS ix_patients_login_id ON patients (login_id);
 
             ALTER TABLE caretakers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+            ALTER TABLE caretakers ADD COLUMN IF NOT EXISTS profession VARCHAR(255);
 
             ALTER TABLE sessions ADD COLUMN IF NOT EXISTS patient_id INTEGER;
             ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mode VARCHAR(255);
@@ -243,6 +246,19 @@ try:
             );
             CREATE INDEX IF NOT EXISTS ix_patient_dismissed_library_patient
                 ON patient_dismissed_library_memories(patient_id);
+
+            CREATE TABLE IF NOT EXISTS patient_flagged_memories (
+                id SERIAL PRIMARY KEY,
+                patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+                memory_item_id INTEGER NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+                patient_note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(patient_id, memory_item_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_patient_flagged_memories_patient
+                ON patient_flagged_memories(patient_id);
+            CREATE INDEX IF NOT EXISTS ix_patient_flagged_memories_memory
+                ON patient_flagged_memories(memory_item_id);
 
             CREATE TABLE IF NOT EXISTS patient_quiz_attempts (
                 id SERIAL PRIMARY KEY,

@@ -63,6 +63,7 @@ class Caretaker(Base):
     age = Column(Integer)
     email = Column(String, unique=True, index=True)
     password = Column(String)
+    profession = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
 
     patients = relationship(
@@ -89,6 +90,8 @@ class Patient(Base):
     passcode = Column(String)
     medical_info = Column(String)
     interests = Column(Text, nullable=True)
+    sub_interests = Column(Text, nullable=True)
+    gender = Column(String(32), nullable=True)
     qr_token = Column(String)
     profile_photo_path = Column(String)
     caretaker_email = Column(String, index=True)
@@ -222,6 +225,35 @@ class PatientDismissedLibraryMemory(Base):
         nullable=False,
         index=True,
     )
+    created_at = Column(DateTime, default=func.now())
+
+
+class PatientFlaggedMemory(Base):
+    """Patient reported content as disturbing during training; caretaker reviews. Memory is not deleted."""
+
+    __tablename__ = "patient_flagged_memories"
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "memory_item_id",
+            name="uq_patient_flagged_memory",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    memory_item_id = Column(
+        Integer,
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    patient_note = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
 
 

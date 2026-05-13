@@ -40,6 +40,7 @@ class CaretakerCreate(BaseModel):
     age: int
     email: str
     password: str
+    profession: Optional[str] = None
 
 
 # --- 5. Patient Read Schema ---
@@ -55,6 +56,8 @@ class PatientSchema(BaseModel):
     passcode: Optional[str] = None
     medical_info: Optional[str] = None
     interests: Optional[str] = None  # JSON-encoded list, parsed on the client
+    sub_interests: Optional[str] = None  # JSON list: finer likes (e.g. artists) for bundle matching
+    gender: Optional[str] = None
     qr_token: Optional[str] = None
     profile_photo_path: Optional[str] = None
     caretaker_email: Optional[str] = None
@@ -71,6 +74,8 @@ class GenericTopicInfo(BaseModel):
     approx_count: int = 0
     # Default on-disk bundle folder name (e.g. ``included``); each bundle has its own ``manifest.json``.
     default_bundle_slug: str = "included"
+    # When catalog is loaded with patient context, higher scores sort first (patient interests / sub-interests / profession).
+    match_score: float = 0.0
 
 
 class GenericBundleSummary(BaseModel):
@@ -99,6 +104,7 @@ class CatalogBundleDetail(BaseModel):
     is_free: bool = True
     price_cents: int = 0
     currency: str = "USD"
+    match_score: float = 0.0
 
 
 class BundleRatePayload(BaseModel):
@@ -155,7 +161,33 @@ class PatientTrainingCompleteRequest(BaseModel):
 
 class PatientTrainingMemoryDeleteResponse(BaseModel):
     status: str = "ok"
-    action: str  # dismissed_library | deleted_personal | removed_shared_access
+    action: str  # dismissed_library | deleted_personal | removed_shared_access (legacy)
+
+
+class PatientFlagMemoryRequest(BaseModel):
+    patient_note: Optional[str] = None
+
+
+class PatientTrainingMemoryFlagResponse(BaseModel):
+    status: str = "ok"
+    action: str = "flagged_for_caretaker"
+    flag_id: int
+
+
+class PatientMemoryFlagCaretakerItem(BaseModel):
+    flag_id: int
+    patient_id: int
+    patient_name: str
+    memory_item_id: int
+    file_path: str
+    library_type: Optional[str] = None
+    memory_title: str = ""
+    related_person_name: Optional[str] = None
+    patient_note: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 class PatientTrainingCompleteResponse(BaseModel):

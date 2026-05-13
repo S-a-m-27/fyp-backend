@@ -31,6 +31,10 @@ You may also use ``"price": 4.99`` (dollars) instead of ``price_cents``. If
 ``__bundle__`` is missing or has no paid price, the bundle is treated as **free**
 (all patients can see it without a purchase).
 
+You may also set ``title`` / ``display_name`` / ``name`` on ``__bundle__`` for the
+catalog card label; optional ``description``, ``keywords``, ``tags`` and each
+image's ``title`` are included when ranking bundles against a patient's interests.
+
 The constant ``DEFAULT_GENERIC_BUNDLE_SLUG`` is only a **suggested** default folder
 name for docs; visibility is driven by ``__bundle__``, not by folder name.
 """
