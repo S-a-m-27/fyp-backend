@@ -118,6 +118,29 @@ class Patient(Base):
     )
 
 
+class PatientCaretakerShare(Base):
+    """Primary caretaker grants another registered caretaker full access to one patient."""
+
+    __tablename__ = "patient_caretaker_shares"
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "delegate_email",
+            name="uq_patient_caretaker_share_delegate",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    delegate_email = Column(String(255), nullable=False, index=True)
+    created_at = Column(DateTime, default=func.now())
+
+
 class Session(Base):
     __tablename__ = "sessions"
 

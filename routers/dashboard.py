@@ -14,15 +14,20 @@ returns everything in a single round-trip.
 """
 
 from datetime import datetime, timedelta, date, time
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DBSession
 
 import models
 import schemas
 from database import get_db
+from utils.caretaker_patient_access import (
+    caretaker_can_access_patient,
+    is_primary_caretaker_for_patient,
+    patient_ids_accessible_to_caretaker,
+)
 
 router = APIRouter(
     prefix="/dashboard",
@@ -44,12 +49,7 @@ def _get_caretaker_or_404(db: DBSession, email: str) -> models.Caretaker:
 
 
 def _patient_ids_for_caretaker(db: DBSession, email: str) -> List[int]:
-    rows = (
-        db.query(models.Patient.id)
-        .filter(models.Patient.caretaker_email == email)
-        .all()
-    )
-    return [r[0] for r in rows]
+    return patient_ids_accessible_to_caretaker(db, email)
 
 
 def _build_stats(db: DBSession, email: str) -> schemas.DashboardStats:
@@ -198,20 +198,172 @@ def get_caretaker_patients(
     email: str = Query(...),
     db: DBSession = Depends(get_db),
 ):
-    """Patients linked to a caretaker (used by the Patients screen)."""
+    """Patients the caretaker may manage: owned + shared by other caretakers."""
     _get_caretaker_or_404(db, email)
-    patients = (
+    el = email.strip().casefold()
+
+    owned = (
         db.query(models.Patient)
-        .filter(models.Patient.caretaker_email == email)
+        .filter(func.lower(models.Patient.caretaker_email) == el)
         .order_by(models.Patient.id.desc())
         .all()
     )
-    return patients
+    owned_ids = {p.id for p in owned}
+
+    delegated_ids = [
+        int(r[0])
+        for r in (
+            db.query(models.PatientCaretakerShare.patient_id)
+            .filter(func.lower(models.PatientCaretakerShare.delegate_email) == el)
+            .all()
+        )
+        if int(r[0]) not in owned_ids
+    ]
+    delegated: List[models.Patient] = []
+    if delegated_ids:
+        delegated = (
+            db.query(models.Patient)
+            .filter(models.Patient.id.in_(delegated_ids))
+            .order_by(models.Patient.id.desc())
+            .all()
+        )
+
+    out: List[schemas.PatientSchema] = []
+    for p in owned:
+        base = schemas.PatientSchema.model_validate(p)
+        out.append(base.model_copy(update={"delegate_access": False}))
+    for p in delegated:
+        base = schemas.PatientSchema.model_validate(p)
+        out.append(base.model_copy(update={"delegate_access": True}))
+    return out
+
+
+@router.get("/patient-delegations", response_model=List[schemas.PatientDelegateInfo])
+def list_patient_delegations(
+    email: str = Query(..., description="Primary caretaker email"),
+    db: DBSession = Depends(get_db),
+):
+    """Co-caretaker assignments for all patients owned by this caretaker."""
+    _get_caretaker_or_404(db, email)
+    el = email.strip().casefold()
+    rows = (
+        db.query(models.PatientCaretakerShare)
+        .join(
+            models.Patient,
+            models.Patient.id == models.PatientCaretakerShare.patient_id,
+        )
+        .filter(func.lower(models.Patient.caretaker_email) == el)
+        .order_by(models.PatientCaretakerShare.id.desc())
+        .all()
+    )
+    return [
+        schemas.PatientDelegateInfo(
+            share_id=r.id,
+            patient_id=r.patient_id,
+            delegate_email=r.delegate_email,
+        )
+        for r in rows
+    ]
+
+
+@router.post("/patient-delegations", response_model=schemas.PatientDelegateInfo)
+def add_patient_delegation(
+    payload: schemas.AssignPatientDelegatePayload,
+    email: str = Query(..., description="Primary caretaker email"),
+    db: DBSession = Depends(get_db),
+):
+    """Grant another registered caretaker the same patient access as you (memories, quiz, library purchases)."""
+    _get_caretaker_or_404(db, email)
+    if not is_primary_caretaker_for_patient(db, email, payload.patient_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the patient's primary caretaker can assign co-caretakers",
+        )
+    raw = (payload.delegate_email or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="delegate_email required")
+    del_lower = raw.casefold()
+    if del_lower == email.strip().casefold():
+        raise HTTPException(status_code=400, detail="Cannot assign yourself")
+    other = (
+        db.query(models.Caretaker)
+        .filter(func.lower(models.Caretaker.email) == del_lower)
+        .first()
+    )
+    if not other:
+        raise HTTPException(
+            status_code=404,
+            detail="No caretaker account exists with that email",
+        )
+    canonical = (other.email or "").strip()
+    exists = (
+        db.query(models.PatientCaretakerShare.id)
+        .filter(
+            models.PatientCaretakerShare.patient_id == payload.patient_id,
+            func.lower(models.PatientCaretakerShare.delegate_email) == del_lower,
+        )
+        .first()
+    )
+    if exists:
+        raise HTTPException(
+            status_code=400,
+            detail="That caretaker is already assigned to this patient",
+        )
+    row = models.PatientCaretakerShare(
+        patient_id=payload.patient_id,
+        delegate_email=canonical,
+    )
+    db.add(row)
+    try:
+        db.commit()
+        db.refresh(row)
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Could not save assignment (duplicate?)",
+        )
+    return schemas.PatientDelegateInfo(
+        share_id=row.id,
+        patient_id=row.patient_id,
+        delegate_email=row.delegate_email,
+    )
+
+
+@router.delete("/patient-delegations/{share_id}", status_code=204)
+def remove_patient_delegation(
+    share_id: int,
+    email: str = Query(..., description="Primary caretaker email"),
+    db: DBSession = Depends(get_db),
+):
+    _get_caretaker_or_404(db, email)
+    el = email.strip().casefold()
+    row = (
+        db.query(models.PatientCaretakerShare)
+        .join(
+            models.Patient,
+            models.Patient.id == models.PatientCaretakerShare.patient_id,
+        )
+        .filter(
+            models.PatientCaretakerShare.id == share_id,
+            func.lower(models.Patient.caretaker_email) == el,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    db.delete(row)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/sessions", status_code=201, response_model=schemas.RecentSession)
 def log_session(
     payload: schemas.SessionCreate,
+    caretaker_email: Optional[str] = Query(
+        None,
+        description="If set, caller must have access to this patient (primary or co-caretaker)",
+    ),
     db: DBSession = Depends(get_db),
 ):
     """Log a new session for a patient (called when a quiz/training ends)."""
@@ -221,6 +373,10 @@ def log_session(
         .first()
     )
     if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    if caretaker_email and not caretaker_can_access_patient(
+        db, caretaker_email, payload.patient_id
+    ):
         raise HTTPException(status_code=404, detail="Patient not found")
 
     new_session = models.Session(

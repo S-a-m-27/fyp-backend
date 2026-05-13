@@ -7,12 +7,13 @@ from datetime import datetime
 from typing import Dict, List, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 import models
 import schemas
 from database import get_db
+from utils.caretaker_patient_access import require_patient_for_caretaker
 from routers.memory import (
     _purchased_only_generic_memories_query,
     _quiz_choice_label,
@@ -28,17 +29,7 @@ router = APIRouter(prefix="/memory/caretaker", tags=["Caretaker Quiz Pool"])
 def _patient_for_caretaker(
     db: Session, patient_id: int, caretaker_email: str
 ) -> models.Patient:
-    p = (
-        db.query(models.Patient)
-        .filter(
-            models.Patient.id == patient_id,
-            models.Patient.caretaker_email == caretaker_email,
-        )
-        .first()
-    )
-    if not p:
-        raise HTTPException(status_code=404, detail="Patient not found")
-    return p
+    return require_patient_for_caretaker(db, caretaker_email, patient_id)
 
 
 def _quiz_candidate_dicts(db: Session, patient_id: int, caretaker_email: str) -> List[dict]:
@@ -346,7 +337,8 @@ def put_defined_quiz(
     caretaker_email: str = Query(..., alias="email"),
     db: Session = Depends(get_db),
 ):
-    _patient_for_caretaker(db, patient_id, caretaker_email)
+    patient_row = _patient_for_caretaker(db, patient_id, caretaker_email)
+    primary_ce = (patient_row.caretaker_email or "").strip()
     allowed = _allowed_memory_ids_for_defined_quiz(db, patient_id)
 
     n = models.DEFINED_QUIZ_QUESTION_SLOTS
@@ -449,11 +441,11 @@ def put_defined_quiz(
         db.query(models.CaretakerDefinedQuizQuestion).filter(
             models.CaretakerDefinedQuizQuestion.quiz_id == dq.id,
         ).delete(synchronize_session=False)
-        dq.caretaker_email = caretaker_email
+        dq.caretaker_email = primary_ce
     else:
         dq = models.CaretakerDefinedQuiz(
             patient_id=patient_id,
-            caretaker_email=caretaker_email,
+            caretaker_email=primary_ce,
         )
         db.add(dq)
         db.flush()
@@ -524,6 +516,11 @@ def list_patient_memory_flags(
     db: Session = Depends(get_db),
 ):
     """Patient comfort/safety flags (e.g. distress or PTSD-related triggers during training)."""
+    el = caretaker_email.strip().casefold()
+    delegated_ids = (
+        db.query(models.PatientCaretakerShare.patient_id)
+        .filter(func.lower(models.PatientCaretakerShare.delegate_email) == el)
+    )
     rows = (
         db.query(
             models.PatientFlaggedMemory,
@@ -535,7 +532,12 @@ def list_patient_memory_flags(
             models.MemoryItem,
             models.MemoryItem.id == models.PatientFlaggedMemory.memory_item_id,
         )
-        .filter(models.Patient.caretaker_email == caretaker_email)
+        .filter(
+            or_(
+                func.lower(models.Patient.caretaker_email) == el,
+                models.Patient.id.in_(delegated_ids),
+            ),
+        )
         .order_by(models.PatientFlaggedMemory.created_at.desc())
         .all()
     )
@@ -565,12 +567,20 @@ def delete_patient_memory_flag(
     db: Session = Depends(get_db),
 ):
     """Remove a flag after clinical review; patient may see the memory in training again."""
+    el = caretaker_email.strip().casefold()
+    delegated_ids = (
+        db.query(models.PatientCaretakerShare.patient_id)
+        .filter(func.lower(models.PatientCaretakerShare.delegate_email) == el)
+    )
     row = (
         db.query(models.PatientFlaggedMemory)
         .join(models.Patient, models.Patient.id == models.PatientFlaggedMemory.patient_id)
         .filter(
             models.PatientFlaggedMemory.id == flag_id,
-            models.Patient.caretaker_email == caretaker_email,
+            or_(
+                func.lower(models.Patient.caretaker_email) == el,
+                models.Patient.id.in_(delegated_ids),
+            ),
         )
         .first()
     )

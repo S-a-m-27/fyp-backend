@@ -29,6 +29,7 @@ from routers.library_relevance import (
     profession_haystack_tokens,
     topic_match_score,
 )
+from utils.caretaker_patient_access import require_patient_for_caretaker
 
 router = APIRouter(prefix="/memory/catalog", tags=["Memory catalog"])
 
@@ -56,20 +57,7 @@ def _patient_for_caretaker_catalog(
     db: Session, caretaker_email: str, patient_id: int
 ) -> models.Patient:
     _caretaker_or_404(db, caretaker_email)
-    p = (
-        db.query(models.Patient)
-        .filter(
-            models.Patient.id == patient_id,
-            models.Patient.caretaker_email == caretaker_email,
-        )
-        .first()
-    )
-    if not p:
-        raise HTTPException(
-            status_code=404,
-            detail="Patient not found for this caretaker",
-        )
-    return p
+    return require_patient_for_caretaker(db, caretaker_email, patient_id)
 
 
 def _caretaker_or_404(db: Session, email: str) -> None:
@@ -225,11 +213,14 @@ def list_bundles_for_topic(
         )
 
     caretaker_bundle_state: dict[str, dict] = {}
-    if email and patient_id and not patient_mode:
+    rank_ctx: Optional[tuple] = None
+    if email and patient_id is not None and not patient_mode:
+        rp_co = _patient_for_caretaker_catalog(db, email, patient_id)
+        primary_ce = (rp_co.caretaker_email or "").strip()
         for rp in (
             db.query(models.CaretakerBundlePurchase)
             .filter(
-                models.CaretakerBundlePurchase.caretaker_email == email,
+                models.CaretakerBundlePurchase.caretaker_email == primary_ce,
                 models.CaretakerBundlePurchase.patient_id == patient_id,
                 models.CaretakerBundlePurchase.library_topic == topic_slug,
             )
@@ -238,14 +229,10 @@ def list_bundles_for_topic(
             lr = getattr(rp, "locked", None)
             locked_val = bool(lr) if lr is not None else False
             caretaker_bundle_state[rp.library_collection_slug] = {"locked": locked_val}
-
-    rank_ctx: Optional[tuple] = None
-    if email and patient_id is not None and not patient_mode:
-        rp = _patient_for_caretaker_catalog(db, email, patient_id)
         rank_ctx = (
-            parse_json_string_list(rp.interests),
-            parse_json_string_list(rp.sub_interests),
-            (rp.gender or "").strip() or None,
+            parse_json_string_list(rp_co.interests),
+            parse_json_string_list(rp_co.sub_interests),
+            (rp_co.gender or "").strip() or None,
         )
 
     out: List[schemas.CatalogBundleDetail] = []
@@ -511,24 +498,15 @@ def purchase_bundle(
             detail="This bundle is free for all patients and does not require purchase.",
         )
 
-    patient = (
-        db.query(models.Patient)
-        .filter(
-            models.Patient.id == payload.patient_id,
-            models.Patient.caretaker_email == payload.caretaker_email,
-        )
-        .first()
+    patient = require_patient_for_caretaker(
+        db, payload.caretaker_email, payload.patient_id
     )
-    if not patient:
-        raise HTTPException(
-            status_code=400,
-            detail="Patient not found for this caretaker",
-        )
+    primary_ce = (patient.caretaker_email or "").strip()
 
     existing = (
         db.query(models.CaretakerBundlePurchase)
         .filter(
-            models.CaretakerBundlePurchase.caretaker_email == payload.caretaker_email,
+            models.CaretakerBundlePurchase.caretaker_email == primary_ce,
             models.CaretakerBundlePurchase.patient_id == payload.patient_id,
             models.CaretakerBundlePurchase.library_topic == payload.topic_slug,
             models.CaretakerBundlePurchase.library_collection_slug == payload.bundle_slug,
@@ -552,7 +530,7 @@ def purchase_bundle(
     currency = str(pricing.get("currency") or "USD")
 
     row = models.CaretakerBundlePurchase(
-        caretaker_email=payload.caretaker_email,
+        caretaker_email=primary_ce,
         patient_id=payload.patient_id,
         library_topic=payload.topic_slug,
         library_collection_slug=payload.bundle_slug,
@@ -568,7 +546,7 @@ def purchase_bundle(
         dup = (
             db.query(models.CaretakerBundlePurchase)
             .filter(
-                models.CaretakerBundlePurchase.caretaker_email == payload.caretaker_email,
+                models.CaretakerBundlePurchase.caretaker_email == primary_ce,
                 models.CaretakerBundlePurchase.patient_id == payload.patient_id,
                 models.CaretakerBundlePurchase.library_topic == payload.topic_slug,
                 models.CaretakerBundlePurchase.library_collection_slug == payload.bundle_slug,
@@ -612,7 +590,7 @@ def purchase_bundle(
         dup = (
             db.query(models.CaretakerBundlePurchase)
             .filter(
-                models.CaretakerBundlePurchase.caretaker_email == payload.caretaker_email,
+                models.CaretakerBundlePurchase.caretaker_email == primary_ce,
                 models.CaretakerBundlePurchase.patient_id == payload.patient_id,
                 models.CaretakerBundlePurchase.library_topic == payload.topic_slug,
                 models.CaretakerBundlePurchase.library_collection_slug == payload.bundle_slug,

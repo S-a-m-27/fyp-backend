@@ -33,13 +33,17 @@ from fastapi import (
     Query,
     UploadFile,
 )
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 import models
 import schemas
 from app_paths import STATIC_DIR, media_path
 from database import get_db
+from utils.caretaker_patient_access import (
+    caretaker_can_access_patient,
+    require_patient_for_caretaker,
+)
 from routers.ai_training import train_faces_from_paths
 
 router = APIRouter(prefix="/memory/personal", tags=["Personal Memories"])
@@ -150,7 +154,7 @@ def append_eligible_generic_memory_dicts(
 def _get_owned_memory(
     memory_id: int, caretaker_email: str, db: Session
 ) -> models.MemoryItem:
-    """Fetch a memory and ensure the caretaker owns it (raises 404/403)."""
+    """Fetch a memory the caretaker may edit (primary or delegated for that patient)."""
     memory = (
         db.query(models.MemoryItem)
         .options(joinedload(models.MemoryItem.shared_with))
@@ -159,7 +163,17 @@ def _get_owned_memory(
     )
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
-    if memory.caretaker_email and memory.caretaker_email != caretaker_email:
+    pid = memory.patient_id
+    if pid is not None:
+        if not caretaker_can_access_patient(db, caretaker_email, int(pid)):
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have permission to modify this memory",
+            )
+        return memory
+    if memory.caretaker_email and memory.caretaker_email.strip().casefold() != (
+        caretaker_email or ""
+    ).strip().casefold():
         raise HTTPException(
             status_code=403,
             detail="You don't have permission to modify this memory",
@@ -187,20 +201,8 @@ async def upload_personal_memory(
     if not files:
         raise HTTPException(status_code=400, detail="At least one image is required")
 
-    # 1. Patient must exist and belong to this caretaker.
-    patient = (
-        db.query(models.Patient)
-        .filter(
-            models.Patient.id == patient_id,
-            models.Patient.caretaker_email == caretaker_email,
-        )
-        .first()
-    )
-    if not patient:
-        raise HTTPException(
-            status_code=404,
-            detail="Patient not found for this caretaker",
-        )
+    # 1. Patient must exist and caller must be primary or delegated caretaker.
+    patient = require_patient_for_caretaker(db, caretaker_email, patient_id)
 
     # 2. Save all uploaded files to disk (same memory, multiple angles of the person).
     saved_paths: List[str] = []
@@ -235,7 +237,7 @@ async def upload_personal_memory(
         memory_type=memory_type,
         year=year,
         location=(location or "").strip() or None,
-        caretaker_email=caretaker_email,
+        caretaker_email=(patient.caretaker_email or "").strip() or caretaker_email,
         file_path=primary,
         extra_file_paths=extra_json,
     )
@@ -308,16 +310,7 @@ def list_personal_memories(
     When ``include_eligible_generic`` is true (default), also returns generic
     library items so the Memories screen matches training/quiz visibility.
     """
-    patient = (
-        db.query(models.Patient)
-        .filter(
-            models.Patient.id == patient_id,
-            models.Patient.caretaker_email == caretaker_email,
-        )
-        .first()
-    )
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    patient = require_patient_for_caretaker(db, caretaker_email, patient_id)
 
     shared_ids_subq = (
         db.query(models.memory_patient_access.c.memory_id)
@@ -426,14 +419,24 @@ def share_personal_memory(
     this memory. Only patients of the same caretaker can be granted access."""
     memory = _get_owned_memory(memory_id, caretaker_email, db)
 
-    # Validate that every requested patient belongs to this caretaker.
+    mem_owner = (
+        db.query(models.Patient)
+        .filter(models.Patient.id == memory.patient_id)
+        .first()
+    )
+    if not mem_owner:
+        raise HTTPException(status_code=400, detail="Memory has no primary patient")
+    primary_email = (mem_owner.caretaker_email or "").strip()
+    pel = primary_email.casefold()
+
+    # Validate that every requested patient belongs to the same primary account.
     requested_ids = list({pid for pid in payload.patient_ids if pid != memory.patient_id})
     if requested_ids:
         valid_patients = (
             db.query(models.Patient)
             .filter(
                 models.Patient.id.in_(requested_ids),
-                models.Patient.caretaker_email == caretaker_email,
+                func.lower(models.Patient.caretaker_email) == pel,
             )
             .all()
         )
@@ -465,10 +468,20 @@ def list_shareable_patients(
     memory = _get_owned_memory(memory_id, caretaker_email, db)
     current_shared_ids = {p.id for p in (memory.shared_with or [])}
 
+    mem_owner = (
+        db.query(models.Patient)
+        .filter(models.Patient.id == memory.patient_id)
+        .first()
+    )
+    if not mem_owner:
+        raise HTTPException(status_code=400, detail="Memory has no primary patient")
+    primary_email = (mem_owner.caretaker_email or "").strip()
+    pel = primary_email.casefold()
+
     others = (
         db.query(models.Patient)
         .filter(
-            models.Patient.caretaker_email == caretaker_email,
+            func.lower(models.Patient.caretaker_email) == pel,
             models.Patient.id != memory.patient_id,
         )
         .order_by(models.Patient.name)

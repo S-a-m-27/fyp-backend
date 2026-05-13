@@ -62,9 +62,22 @@ class PatientSchema(BaseModel):
     profile_photo_path: Optional[str] = None
     caretaker_email: Optional[str] = None
     memory_training_completed: bool = False
+    # True when this patient appears in the list because another caretaker shared access (not the primary owner).
+    delegate_access: bool = False
 
     class Config:
         from_attributes = True
+
+
+class PatientDelegateInfo(BaseModel):
+    share_id: int
+    patient_id: int
+    delegate_email: str
+
+
+class AssignPatientDelegatePayload(BaseModel):
+    patient_id: int
+    delegate_email: str
 
 
 class GenericTopicInfo(BaseModel):

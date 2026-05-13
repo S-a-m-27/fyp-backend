@@ -260,6 +260,16 @@ try:
             CREATE INDEX IF NOT EXISTS ix_patient_flagged_memories_memory
                 ON patient_flagged_memories(memory_item_id);
 
+            CREATE TABLE IF NOT EXISTS patient_caretaker_shares (
+                id SERIAL PRIMARY KEY,
+                patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+                delegate_email VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(patient_id, delegate_email)
+            );
+            CREATE INDEX IF NOT EXISTS ix_patient_caretaker_shares_delegate
+                ON patient_caretaker_shares(delegate_email);
+
             CREATE TABLE IF NOT EXISTS patient_quiz_attempts (
                 id SERIAL PRIMARY KEY,
                 patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
