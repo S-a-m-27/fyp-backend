@@ -88,9 +88,9 @@ async def test_group_photo(file: UploadFile = File(...)):
 
             # Threshold logic - 0.60 se zyada similarity chahiye
             if highest_similarity > 0.60 and best_match:
-                parts = best_match.replace(".npy", "").split("_")
-                name = parts[0].capitalize()
-                relationship = parts[1].capitalize() if len(parts) > 1 else "Relative"
+                stem = best_match.replace(".npy", "")
+                name = stem.replace("_", " ").strip().title()
+                relationship = ""
 
                 # Duplicate check - agar same person pehle se identify ho chuka hai
                 if name not in assigned_faces:

@@ -467,6 +467,267 @@ def _purchased_only_generic_memories_query(db: Session, patient_id: int):
     )
 
 
+# --- Public contributor flow (no caretaker account required) ---
+# Anyone can add generic memories to the catalog by submitting their email +
+# topic/bundle labels + an image. Files land on disk exactly the same way the
+# disk-sync flow expects (``static/memory/generic/<topic>/<bundle>/...``) and a
+# matching ``manifest.json`` entry is written so quiz/training pipelines work
+# without any further admin step.
+
+
+_CONTRIB_EMAIL_MAX = 254
+_CONTRIB_TITLE_MAX = 200
+_CONTRIB_LOCATION_MAX = 200
+_CONTRIB_DESC_MAX = _MANIFEST_MAX_FIELD_LEN
+_CONTRIB_DEFAULT_BUNDLE_SLUG = "community"
+_CONTRIB_MAX_BYTES = 12 * 1024 * 1024  # 12 MiB per image
+_CONTRIB_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _contrib_segment_slug(label: str, *, fallback: str) -> str:
+    """Map free-text label to an on-disk folder segment.
+
+    If the label already matches an existing safe segment under the generic
+    library (case-insensitive), keep that exact folder name so contributions
+    land in the existing topic / bundle. Otherwise fall back to a strict slug.
+    """
+    raw = (label or "").strip()
+    if not raw:
+        return fallback
+    return _slug_segment(raw) or fallback
+
+
+def _contrib_match_existing(label: str, candidates: List[str]) -> Optional[str]:
+    """Return a candidate folder name that matches ``label`` case-insensitively."""
+    target = (label or "").strip().casefold()
+    if not target:
+        return None
+    for c in candidates:
+        if c.strip().casefold() == target:
+            return c
+    return None
+
+
+def _contrib_topic_segment(label: str) -> str:
+    root = STATIC_DIR / "memory" / "generic"
+    if root.is_dir():
+        existing = [
+            p.name
+            for p in root.iterdir()
+            if p.is_dir() and is_safe_library_segment(p.name)
+        ]
+        match = _contrib_match_existing(label, existing)
+        if match:
+            return match
+    return _contrib_segment_slug(label, fallback="community")
+
+
+def _contrib_bundle_segment(topic_segment: str, label: str) -> str:
+    topic_dir = STATIC_DIR / "memory" / "generic" / topic_segment
+    if topic_dir.is_dir():
+        existing = [
+            p.name
+            for p in topic_dir.iterdir()
+            if p.is_dir() and is_safe_library_segment(p.name)
+        ]
+        match = _contrib_match_existing(label, existing)
+        if match:
+            return match
+    return _contrib_segment_slug(
+        label, fallback=_CONTRIB_DEFAULT_BUNDLE_SLUG,
+    )
+
+
+def _contrib_update_manifest(
+    bundle_dir: Path,
+    filename: str,
+    *,
+    title: str,
+    location: Optional[str],
+    description: Optional[str],
+    contributor_email: str,
+) -> None:
+    """Add/replace the manifest entry for ``filename`` and ensure ``__bundle__`` is free."""
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = bundle_dir / "manifest.json"
+    data: Dict[str, Any] = {}
+    if manifest_path.is_file():
+        try:
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                data = raw
+        except (json.JSONDecodeError, OSError):
+            data = {}
+    if "__bundle__" not in data or not isinstance(data["__bundle__"], dict):
+        data["__bundle__"] = {"free": True}
+    entry: Dict[str, Any] = {"title": title}
+    if location:
+        entry["location"] = location
+    if description:
+        entry["description"] = description
+    entry["contributor_email"] = contributor_email
+    data[filename] = entry
+    manifest_path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+@router.get("/contribute/topics")
+def list_contributor_topics() -> Dict[str, Any]:
+    """Existing topics + their bundles, for the contributor picker UI."""
+    root = STATIC_DIR / "memory" / "generic"
+    out: List[Dict[str, Any]] = []
+    if root.is_dir():
+        for topic_path in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+            if not topic_path.is_dir() or not is_safe_library_segment(topic_path.name):
+                continue
+            bundles = [
+                b.name
+                for b in sorted(topic_path.iterdir(), key=lambda p: p.name.lower())
+                if b.is_dir() and is_safe_library_segment(b.name)
+            ]
+            out.append({"slug": topic_path.name, "bundles": bundles})
+    return {
+        "topics": out,
+        "default_bundle_slug": _CONTRIB_DEFAULT_BUNDLE_SLUG,
+    }
+
+
+@router.post("/contribute")
+async def contribute_generic_memory(
+    contributor_email: str = Form(...),
+    library_topic: str = Form(...),
+    title: str = Form(...),
+    library_collection_slug: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    location: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Anonymous-friendly upload of a generic memory.
+
+    Accepts an email so contributions can be traced/credited; no account or
+    login is required. The image is written under
+    ``static/memory/generic/<topic>/<bundle>/`` with a manifest entry, and a
+    matching ``MemoryItem`` row is inserted so the training/quiz flows can
+    use it immediately.
+    """
+    email = (contributor_email or "").strip()
+    if not email or len(email) > _CONTRIB_EMAIL_MAX or not _CONTRIB_EMAIL_RE.match(
+        email,
+    ):
+        raise HTTPException(status_code=400, detail="A valid email is required")
+
+    title_clean = (title or "").strip()
+    if not title_clean:
+        raise HTTPException(status_code=400, detail="Title is required")
+    if len(title_clean) > _CONTRIB_TITLE_MAX:
+        title_clean = title_clean[:_CONTRIB_TITLE_MAX]
+
+    topic_label = (library_topic or "").strip()
+    if not topic_label:
+        raise HTTPException(status_code=400, detail="Topic is required")
+
+    description_clean = (description or "").strip() or None
+    if description_clean and len(description_clean) > _CONTRIB_DESC_MAX:
+        description_clean = description_clean[:_CONTRIB_DESC_MAX]
+    location_clean = (location or "").strip() or None
+    if location_clean and len(location_clean) > _CONTRIB_LOCATION_MAX:
+        location_clean = location_clean[:_CONTRIB_LOCATION_MAX]
+
+    topic_segment = _contrib_topic_segment(topic_label)
+    if not is_safe_library_segment(topic_segment):
+        raise HTTPException(status_code=400, detail="Invalid topic name")
+    bundle_segment = _contrib_bundle_segment(
+        topic_segment, library_collection_slug or _CONTRIB_DEFAULT_BUNDLE_SLUG,
+    )
+    if not is_safe_library_segment(bundle_segment):
+        raise HTTPException(status_code=400, detail="Invalid bundle name")
+
+    raw_ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if raw_ext not in {"jpg", "jpeg", "png", "webp"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only JPG, PNG or WEBP images are accepted",
+        )
+    if raw_ext == "jpeg":
+        raw_ext = "jpg"
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(payload) > _CONTRIB_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail="Image too large (12 MB max)",
+        )
+
+    bundle_dir = (
+        STATIC_DIR / "memory" / "generic" / topic_segment / bundle_segment
+    )
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}.{raw_ext}"
+    abs_path = bundle_dir / filename
+    with abs_path.open("wb") as f:
+        f.write(payload)
+
+    try:
+        _contrib_update_manifest(
+            bundle_dir,
+            filename,
+            title=title_clean,
+            location=location_clean,
+            description=description_clean,
+            contributor_email=email,
+        )
+    except OSError as exc:
+        try:
+            abs_path.unlink()
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not update manifest: {exc}",
+        )
+
+    rel_path = (
+        f"static/memory/generic/{topic_segment}/{bundle_segment}/{filename}"
+    )
+    new_row = models.MemoryItem(
+        patient_id=None,
+        title=title_clean,
+        description=description_clean,
+        related_person_name=None,
+        related_person_relation=None,
+        category="image",
+        library_type="generic",
+        library_topic=topic_segment,
+        library_collection_slug=bundle_segment,
+        memory_type="general",
+        year=None,
+        location=location_clean,
+        caretaker_email=None,
+        file_path=rel_path,
+        extra_file_paths=None,
+    )
+    db.add(new_row)
+    db.commit()
+    db.refresh(new_row)
+
+    bump_generic_library_disk_cache()
+
+    return {
+        "status": "ok",
+        "memory_id": int(new_row.id),
+        "library_topic": topic_segment,
+        "library_collection_slug": bundle_segment,
+        "file_path": rel_path,
+        "title": title_clean,
+        "contributor_email": email,
+    }
+
+
 # --- 1. UPLOAD MEMORY ---
 # Generic branch: optional admin/dev uploads. Production generic rows come from
 # on-disk folders + manifest.json via sync_disk_generic_library_to_db at startup.
@@ -998,6 +1259,290 @@ async def get_memory_quiz(
         "question_item": _quiz_question_item_min(correct_item),
         "shuffled_options": shuffled_options,
     }
+
+
+def _ensure_quiz_unlocked_patient(p: models.Patient) -> None:
+    if int(getattr(p, "training_sessions_completed", 0) or 0) < 3:
+        raise HTTPException(
+            status_code=403,
+            detail="Complete three gentle training sessions to unlock quiz mode.",
+        )
+
+
+def _eligible_memory_by_id(
+    db: Session, patient_id: int, memory_id: int
+) -> Optional[models.MemoryItem]:
+    return (
+        _eligible_memories_query(db, patient_id)
+        .filter(models.MemoryItem.id == memory_id)
+        .first()
+    )
+
+
+def _build_quiz_question_for_memory(
+    db: Session, patient_id: int, mem: models.MemoryItem
+) -> Dict[str, Any]:
+    """Same quiz payload shape as ``get_memory_quiz`` for one eligible memory."""
+    n_slots = int(models.DEFINED_QUIZ_QUESTION_SLOTS)
+    dq = (
+        db.query(models.CaretakerDefinedQuiz)
+        .filter(models.CaretakerDefinedQuiz.patient_id == patient_id)
+        .first()
+    )
+    if dq:
+        questions = (
+            db.query(models.CaretakerDefinedQuizQuestion)
+            .filter(models.CaretakerDefinedQuizQuestion.quiz_id == dq.id)
+            .order_by(models.CaretakerDefinedQuizQuestion.slot.asc())
+            .all()
+        )
+        if len(questions) == n_slots:
+            qrow = next(
+                (q for q in questions if int(q.memory_item_id) == int(mem.id)),
+                None,
+            )
+            if qrow is not None:
+                correct = _quiz_choice_label(mem)
+                w1 = (qrow.wrong_option_1 or "").strip()
+                w2 = (qrow.wrong_option_2 or "").strip()
+                w3 = (qrow.wrong_option_3 or "").strip()
+                opts: List[str] = []
+                if qrow.mc_options_json:
+                    try:
+                        four = json.loads(qrow.mc_options_json)
+                        if isinstance(four, list) and len(four) == 4:
+                            opts = [str(x or "").strip() or "—" for x in four]
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        opts = []
+                if len(opts) != 4:
+                    opts = [correct, w1, w2, w3]
+                random.shuffle(opts)
+                is_personal = (mem.library_type or "").lower() == "personal"
+                qi = _quiz_question_item_min(mem)
+                if (
+                    len(opts) == 4
+                    and qrow.mc_options_json
+                    and qrow.correct_option_index is not None
+                ):
+                    try:
+                        fo_raw = json.loads(qrow.mc_options_json)
+                        if isinstance(fo_raw, list):
+                            ix = int(qrow.correct_option_index)
+                            if 0 <= ix < len(fo_raw):
+                                mc_ans = str(fo_raw[ix] or "").strip()
+                                qi = {
+                                    **qi,
+                                    "quiz_answer": mc_ans or qi["quiz_answer"],
+                                    "title": mc_ans or qi["title"],
+                                }
+                    except (json.JSONDecodeError, TypeError, ValueError, IndexError):
+                        pass
+                return {
+                    "status": "ongoing",
+                    "quiz_format": "caretaker_defined",
+                    "required_correct_total": n_slots,
+                    "requires_face_verify": is_personal,
+                    "question_item": qi,
+                    "shuffled_options": opts,
+                }
+
+    base_query = _eligible_memories_query(db, patient_id)
+    pool_rows = (
+        db.query(models.PatientQuizMemoryItem.memory_item_id)
+        .filter(models.PatientQuizMemoryItem.patient_id == patient_id)
+        .all()
+    )
+    pool_ids = [int(r[0]) for r in pool_rows]
+    if pool_ids:
+        base_query = base_query.filter(models.MemoryItem.id.in_(pool_ids))
+    all_memories = base_query.all()
+    correct_item = mem
+    correct_label = _quiz_choice_label(correct_item)
+    other_labels = list(
+        {
+            _quiz_choice_label(m)
+            for m in all_memories
+            if _quiz_choice_label(m) != correct_label
+        },
+    )
+    if len(other_labels) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Not enough distinct choices to practice this memory.",
+        )
+    distractors = random.sample(other_labels, 3)
+    shuffled_options = distractors + [correct_label]
+    random.shuffle(shuffled_options)
+    is_personal = (correct_item.library_type or "").lower() == "personal"
+    return {
+        "status": "ongoing",
+        "quiz_format": "legacy_pool",
+        "required_correct_total": int(models.LEGACY_QUIZ_TARGET_CORRECT),
+        "requires_face_verify": is_personal,
+        "question_item": _quiz_question_item_min(correct_item),
+        "shuffled_options": shuffled_options,
+    }
+
+
+@router.get(
+    "/quiz/{patient_id}/struggle-items",
+    response_model=schemas.QuizStruggleListOut,
+)
+def list_quiz_struggle_items(
+    patient_id: int,
+    passcode: Optional[str] = Query(None),
+    qr_token: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Memories the patient has missed often in quiz (for extra practice)."""
+    p = _catalog_patient_auth(db, patient_id, passcode, qr_token)
+    _ensure_quiz_unlocked_patient(p)
+    rows = (
+        db.query(models.PatientQuizStruggle, models.MemoryItem)
+        .join(
+            models.MemoryItem,
+            models.MemoryItem.id == models.PatientQuizStruggle.memory_item_id,
+        )
+        .filter(models.PatientQuizStruggle.patient_id == patient_id)
+        .order_by(models.PatientQuizStruggle.wrong_count.desc())
+        .limit(40)
+        .all()
+    )
+    items: List[schemas.QuizStruggleItemOut] = []
+    for st, m in rows:
+        desc = (getattr(m, "description", None) or "").strip() or None
+        items.append(
+            schemas.QuizStruggleItemOut(
+                memory_item_id=int(m.id),
+                wrong_count=int(st.wrong_count or 0),
+                file_path=m.file_path,
+                title=_quiz_display_title(m),
+                description=desc,
+                library_type=(m.library_type or None),
+                related_person_name=(
+                    (m.related_person_name or "").strip() or None
+                ),
+                related_person_relation=(
+                    (m.related_person_relation or "").strip() or None
+                ),
+            )
+        )
+    return schemas.QuizStruggleListOut(items=items)
+
+
+@router.get("/quiz/{patient_id}/struggle-question/{memory_id}")
+async def get_struggle_quiz_question(
+    patient_id: int,
+    memory_id: int,
+    passcode: Optional[str] = Query(None),
+    qr_token: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """One practice question for a memory on the struggle list."""
+    p = _catalog_patient_auth(db, patient_id, passcode, qr_token)
+    _ensure_quiz_unlocked_patient(p)
+    st = (
+        db.query(models.PatientQuizStruggle)
+        .filter(
+            models.PatientQuizStruggle.patient_id == patient_id,
+            models.PatientQuizStruggle.memory_item_id == memory_id,
+        )
+        .first()
+    )
+    if not st:
+        raise HTTPException(
+            status_code=404,
+            detail="This photo is not on your practice list yet. Miss it in quiz a few times and it will appear here.",
+        )
+    mem = _eligible_memory_by_id(db, patient_id, memory_id)
+    if not mem:
+        raise HTTPException(
+            status_code=404,
+            detail="That memory is no longer available for practice.",
+        )
+    return _build_quiz_question_for_memory(db, patient_id, mem)
+
+
+@router.post(
+    "/quiz/{patient_id}/struggle/wrong",
+    response_model=schemas.QuizStruggleRecordOut,
+)
+def record_quiz_struggle_wrong(
+    patient_id: int,
+    body: schemas.QuizStruggleWrongIn,
+    passcode: Optional[str] = Query(None),
+    qr_token: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Increment struggle score (called from quiz when the patient picks a wrong answer)."""
+    p = _catalog_patient_auth(db, patient_id, passcode, qr_token)
+    _ensure_quiz_unlocked_patient(p)
+    mid = int(body.memory_item_id)
+    if not _eligible_memory_by_id(db, patient_id, mid):
+        raise HTTPException(status_code=404, detail="Memory not in your quiz library")
+    row = (
+        db.query(models.PatientQuizStruggle)
+        .filter(
+            models.PatientQuizStruggle.patient_id == patient_id,
+            models.PatientQuizStruggle.memory_item_id == mid,
+        )
+        .first()
+    )
+    if row:
+        row.wrong_count = int(row.wrong_count or 0) + 1
+    else:
+        row = models.PatientQuizStruggle(
+            patient_id=patient_id,
+            memory_item_id=mid,
+            wrong_count=1,
+        )
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return schemas.QuizStruggleRecordOut(
+        status="ok",
+        wrong_count=int(row.wrong_count or 0),
+        removed=False,
+    )
+
+
+@router.post(
+    "/quiz/{patient_id}/struggle/correct",
+    response_model=schemas.QuizStruggleRecordOut,
+)
+def record_quiz_struggle_practice_correct(
+    patient_id: int,
+    body: schemas.QuizStruggleWrongIn,
+    passcode: Optional[str] = Query(None),
+    qr_token: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Lower struggle score after a correct answer in the practice activity."""
+    _catalog_patient_auth(db, patient_id, passcode, qr_token)
+    mid = int(body.memory_item_id)
+    row = (
+        db.query(models.PatientQuizStruggle)
+        .filter(
+            models.PatientQuizStruggle.patient_id == patient_id,
+            models.PatientQuizStruggle.memory_item_id == mid,
+        )
+        .first()
+    )
+    if not row:
+        return schemas.QuizStruggleRecordOut(status="ok", wrong_count=0, removed=False)
+    wc = max(0, int(row.wrong_count or 0) - 1)
+    if wc <= 0:
+        db.delete(row)
+        db.commit()
+        return schemas.QuizStruggleRecordOut(status="ok", wrong_count=0, removed=True)
+    row.wrong_count = wc
+    db.commit()
+    db.refresh(row)
+    return schemas.QuizStruggleRecordOut(
+        status="ok",
+        wrong_count=int(row.wrong_count),
+        removed=False,
+    )
 
 
 @router.post(

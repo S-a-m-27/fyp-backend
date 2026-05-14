@@ -362,6 +362,11 @@ def update_personal_memory(
     db: Session = Depends(get_db),
 ):
     memory = _get_owned_memory(memory_id, caretaker_email, db)
+    if (memory.library_type or "").strip().lower() == "generic":
+        raise HTTPException(
+            status_code=400,
+            detail="Library catalog photos cannot be edited from this screen.",
+        )
 
     if title is not None:
         memory.title = title.strip()

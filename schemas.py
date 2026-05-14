@@ -80,6 +80,22 @@ class AssignPatientDelegatePayload(BaseModel):
     delegate_email: str
 
 
+class PatientUpdate(BaseModel):
+    """Partial update for caretaker-managed patient profile (no passcode / QR here)."""
+
+    name: Optional[str] = None
+    age: Optional[int] = None
+    relation: Optional[str] = None
+    profession: Optional[str] = None
+    dob: Optional[str] = None
+    location: Optional[str] = None
+    login_id: Optional[str] = None
+    medical_info: Optional[str] = None
+    interests: Optional[str] = None
+    sub_interests: Optional[str] = None
+    gender: Optional[str] = None
+
+
 class GenericTopicInfo(BaseModel):
     slug: str
     label: str
@@ -221,6 +237,31 @@ class QuizAttemptRecordOut(BaseModel):
     status: str = "ok"
     id: int
     training_sessions_reset: bool = False
+
+
+class QuizStruggleWrongIn(BaseModel):
+    memory_item_id: int
+
+
+class QuizStruggleItemOut(BaseModel):
+    memory_item_id: int
+    wrong_count: int
+    file_path: Optional[str] = None
+    title: str = ""
+    description: Optional[str] = None
+    library_type: Optional[str] = None
+    related_person_name: Optional[str] = None
+    related_person_relation: Optional[str] = None
+
+
+class QuizStruggleListOut(BaseModel):
+    items: List[QuizStruggleItemOut]
+
+
+class QuizStruggleRecordOut(BaseModel):
+    status: str = "ok"
+    wrong_count: int = 0
+    removed: bool = False
 
 
 class PatientWellnessIntroCompleteRequest(BaseModel):

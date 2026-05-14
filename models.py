@@ -300,6 +300,35 @@ class PatientQuizAttempt(Base):
     created_at = Column(DateTime, default=func.now())
 
 
+class PatientQuizStruggle(Base):
+    """Tracks memories the patient often answers wrong in quiz (extra practice focus)."""
+
+    __tablename__ = "patient_quiz_struggles"
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "memory_item_id",
+            name="uq_patient_quiz_struggle_mem",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    memory_item_id = Column(
+        Integer,
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    wrong_count = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
 class CaretakerDefinedQuiz(Base):
     """One caretaker-built fixed-length quiz per patient (replaces random quiz when complete)."""
 

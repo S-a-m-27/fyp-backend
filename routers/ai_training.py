@@ -59,7 +59,12 @@ def train_faces_from_paths(
     (``static/memory/personal/``). **Never** call this for generic library paths
     under ``static/memory/generic/`` — those are quiz-only (titles from DB /
     manifest), not relative face recognition.
+
+    Embeddings are stored under **the person's name only** (``{name}.npy``).
+    ``relationship`` is kept for API compatibility but is not part of the label
+    or filename.
     """
+    _ = relationship
     resolved_ok: List[str] = []
     for image_path in image_paths:
         r = _resolved_train_path(image_path)
@@ -79,7 +84,6 @@ def train_faces_from_paths(
     best_image_saved = False
 
     clean_name = name.strip().replace(" ", "_").lower()
-    clean_rel = relationship.strip().replace(" ", "_").lower()
 
     for resolved in resolved_ok:
         try:
@@ -109,10 +113,7 @@ def train_faces_from_paths(
         )
 
     avg_embedding = np.mean(all_embeddings, axis=0)
-    np.save(
-        os.path.join(STORAGE_DIR, f"{clean_name}_{clean_rel}.npy"),
-        avg_embedding,
-    )
+    np.save(os.path.join(STORAGE_DIR, f"{clean_name}.npy"), avg_embedding)
 
     return {
         "status": "Success",
@@ -163,11 +164,7 @@ def predict_face_name_from_image_path(abs_image_path: str) -> tuple[Optional[str
     if best_match is None or highest_similarity < 0.55:
         return None, float(highest_similarity)
     stem = best_match.replace(".npy", "")
-    if "_" in stem:
-        name_part, _rel = stem.rsplit("_", 1)
-    else:
-        name_part = stem
-    display = name_part.replace("_", " ").strip().title()
+    display = stem.replace("_", " ").strip().title()
     return display, float(highest_similarity)
 
 

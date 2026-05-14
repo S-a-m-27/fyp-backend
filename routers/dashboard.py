@@ -238,6 +238,85 @@ def get_caretaker_patients(
     return out
 
 
+@router.get("/patients/{patient_id}", response_model=schemas.PatientSchema)
+def get_caretaker_patient(
+    patient_id: int,
+    email: str = Query(...),
+    db: DBSession = Depends(get_db),
+):
+    """One patient record if the caretaker may access them (primary or delegate)."""
+    _get_caretaker_or_404(db, email)
+    if not caretaker_can_access_patient(db, email, patient_id):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have permission to view this patient",
+        )
+    p = (
+        db.query(models.Patient)
+        .filter(models.Patient.id == patient_id)
+        .first()
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    primary = (p.caretaker_email or "").strip().casefold()
+    is_delegate = primary != email.strip().casefold()
+    base = schemas.PatientSchema.model_validate(p)
+    return base.model_copy(update={"delegate_access": is_delegate})
+
+
+@router.patch("/patients/{patient_id}", response_model=schemas.PatientSchema)
+def update_caretaker_patient(
+    patient_id: int,
+    payload: schemas.PatientUpdate,
+    email: str = Query(...),
+    db: DBSession = Depends(get_db),
+):
+    """Update patient demographics / notes for anyone who can access this patient."""
+    _get_caretaker_or_404(db, email)
+    if not caretaker_can_access_patient(db, email, patient_id):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have permission to update this patient",
+        )
+    patient = (
+        db.query(models.Patient)
+        .filter(models.Patient.id == patient_id)
+        .first()
+    )
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    if "login_id" in data:
+        lid = (data.pop("login_id") or "").strip() or None
+        if lid:
+            clash = (
+                db.query(models.Patient.id)
+                .filter(
+                    models.Patient.login_id == lid,
+                    models.Patient.id != patient_id,
+                )
+                .first()
+            )
+            if clash:
+                raise HTTPException(
+                    status_code=400,
+                    detail="That reference ID is already used by another patient",
+                )
+        patient.login_id = lid
+    for key, val in data.items():
+        if not hasattr(patient, key):
+            continue
+        setattr(patient, key, val)
+
+    db.commit()
+    db.refresh(patient)
+    primary = (patient.caretaker_email or "").strip().casefold()
+    is_delegate = primary != email.strip().casefold()
+    base = schemas.PatientSchema.model_validate(patient)
+    return base.model_copy(update={"delegate_access": is_delegate})
+
+
 @router.get("/patient-delegations", response_model=List[schemas.PatientDelegateInfo])
 def list_patient_delegations(
     email: str = Query(..., description="Primary caretaker email"),

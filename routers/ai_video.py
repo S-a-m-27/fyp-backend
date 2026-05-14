@@ -57,7 +57,8 @@ async def test_video(file: UploadFile = File(...)):
 
                             # 2. Video ke liye threshold 0.50-0.55 rakhein
                             if similarity > 0.60:
-                                name = filename.replace(".npy", "").split("_")[0].capitalize()
+                                stem = filename.replace(".npy", "")
+                                name = stem.replace("_", " ").strip().title()
                                 unique_people.add(name)
                                 print(f"Found {name} in video with {similarity} score")
             except Exception as e:

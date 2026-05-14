@@ -282,6 +282,17 @@ try:
             );
             CREATE INDEX IF NOT EXISTS ix_patient_quiz_attempts_patient
                 ON patient_quiz_attempts(patient_id);
+
+            CREATE TABLE IF NOT EXISTS patient_quiz_struggles (
+                id SERIAL PRIMARY KEY,
+                patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+                memory_item_id INTEGER NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+                wrong_count INTEGER NOT NULL DEFAULT 1,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(patient_id, memory_item_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_patient_quiz_struggles_patient
+                ON patient_quiz_struggles(patient_id);
             """
         ))
         conn.commit()

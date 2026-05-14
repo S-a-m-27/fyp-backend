@@ -17,8 +17,8 @@ async def get_real_stats():
     # 2. Asli files scan karein (.npy files count)
     files = [f for f in os.listdir(STORAGE_DIR) if f.endswith(".npy")]
 
-    # 3. Unique patients nikalain (File name: "Ubaid_1.npy" -> split karke "Ubaid" nikalega)
-    unique_patients = set([f.split('_')[0] for f in files])
+    # 3. One .npy per trained identity; filename stem is the full name (underscores = spaces)
+    unique_patients = {f.replace(".npy", "") for f in files}
 
     return {
         "memories": len(files),
