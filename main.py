@@ -293,6 +293,43 @@ try:
             );
             CREATE INDEX IF NOT EXISTS ix_patient_quiz_struggles_patient
                 ON patient_quiz_struggles(patient_id);
+
+            -- Legacy single-image contributor queue (superseded by the
+            -- bundle/image pair below). Dropping is safe because the previous
+            -- schema was never released and held only dev test rows.
+            DROP TABLE IF EXISTS pending_generic_contributions;
+
+            CREATE TABLE IF NOT EXISTS pending_contribution_bundles (
+                id SERIAL PRIMARY KEY,
+                contributor_email VARCHAR(254) NOT NULL,
+                library_topic VARCHAR(255) NOT NULL,
+                library_collection_slug VARCHAR(255) NOT NULL,
+                bundle_description TEXT,
+                is_free BOOLEAN NOT NULL DEFAULT TRUE,
+                price_cents INTEGER NOT NULL DEFAULT 0,
+                currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+                status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                review_note TEXT,
+                reviewed_by_admin_email VARCHAR(255),
+                reviewed_at TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_pending_contribution_bundles_email
+                ON pending_contribution_bundles(contributor_email);
+            CREATE INDEX IF NOT EXISTS ix_pending_contribution_bundles_status
+                ON pending_contribution_bundles(status);
+
+            CREATE TABLE IF NOT EXISTS pending_contribution_images (
+                id SERIAL PRIMARY KEY,
+                bundle_id INTEGER NOT NULL REFERENCES pending_contribution_bundles(id) ON DELETE CASCADE,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                location VARCHAR(255),
+                file_path VARCHAR(500) NOT NULL,
+                order_index INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS ix_pending_contribution_images_bundle
+                ON pending_contribution_images(bundle_id);
             """
         ))
         conn.commit()

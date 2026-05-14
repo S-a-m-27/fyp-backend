@@ -522,3 +522,81 @@ class AdminNotificationItem(BaseModel):
 class AdminApprovePurchaseResponse(BaseModel):
     status: str
     already_unlocked: bool = False
+
+
+# ---------- Admin: moderation of public contributor uploads ----------
+
+
+class ContributeImageMetadata(BaseModel):
+    """Per-image metadata supplied alongside the uploaded files."""
+
+    title: str
+    description: Optional[str] = None
+    location: Optional[str] = None
+
+
+class ContributePendingResponse(BaseModel):
+    """Returned by POST /memory/contribute — bundle is queued for admin review."""
+
+    status: str = "pending"
+    pending_bundle_id: int
+    image_count: int
+    library_topic: str
+    library_collection_slug: str
+    contributor_email: str
+    is_free: bool = True
+    price_cents: int = 0
+    currency: str = "USD"
+    message: str = (
+        "Thanks! Your bundle is queued for review and will appear in the "
+        "library once an admin approves it."
+    )
+
+
+class AdminPendingContributionImage(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    location: Optional[str] = None
+    file_path: str
+    order_index: int = 0
+
+
+class AdminPendingContributionBundle(BaseModel):
+    """One bundle awaiting moderation, with all of its images embedded."""
+
+    id: int
+    contributor_email: str
+    library_topic: str
+    library_collection_slug: str
+    bundle_description: Optional[str] = None
+    is_free: bool = True
+    price_cents: int = 0
+    currency: str = "USD"
+    status: str
+    review_note: Optional[str] = None
+    reviewed_by_admin_email: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    images: List[AdminPendingContributionImage] = []
+
+
+class AdminApproveContributionResponse(BaseModel):
+    status: str = "ok"
+    pending_bundle_id: int
+    library_topic: str
+    library_collection_slug: str
+    image_count: int = 0
+    memory_ids: List[int] = []
+    already_reviewed: bool = False
+    pricing_preserved: bool = False
+
+
+class AdminRejectContributionRequest(BaseModel):
+    note: Optional[str] = None
+
+
+class AdminRejectContributionResponse(BaseModel):
+    status: str = "ok"
+    pending_bundle_id: int
+    already_reviewed: bool = False

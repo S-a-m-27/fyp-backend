@@ -482,6 +482,8 @@ _CONTRIB_DESC_MAX = _MANIFEST_MAX_FIELD_LEN
 _CONTRIB_DEFAULT_BUNDLE_SLUG = "community"
 _CONTRIB_MAX_BYTES = 12 * 1024 * 1024  # 12 MiB per image
 _CONTRIB_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_CONTRIB_PENDING_DIRNAME = "pending"
+_CONTRIB_ALLOWED_EXTS = frozenset({"jpg", "jpeg", "png", "webp"})
 
 
 def _contrib_segment_slug(label: str, *, fallback: str) -> str:
@@ -538,6 +540,74 @@ def _contrib_bundle_segment(topic_segment: str, label: str) -> str:
     )
 
 
+def _contrib_read_manifest(bundle_dir: Path) -> Dict[str, Any]:
+    """Return the parsed ``manifest.json`` dict, or ``{}`` if missing/invalid."""
+    manifest_path = bundle_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return {}
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _contrib_write_manifest(bundle_dir: Path, data: Dict[str, Any]) -> None:
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _contrib_build_bundle_block(
+    *,
+    existing: Optional[Dict[str, Any]],
+    is_free: bool,
+    price_cents: int,
+    currency: str,
+    description: Optional[str],
+) -> Tuple[Dict[str, Any], bool]:
+    """Build the manifest ``__bundle__`` block.
+
+    Pricing on an *existing* bundle is preserved — contributors cannot raise
+    or lower the price of a bundle they didn't create. The bundle-level
+    ``description`` is filled only if absent.
+
+    Returns ``(block, pricing_preserved)`` where ``pricing_preserved`` is
+    ``True`` when the existing block already had pricing info and was kept.
+    """
+    existing_block = existing if isinstance(existing, dict) else None
+
+    has_existing_pricing = bool(
+        existing_block
+        and (
+            existing_block.get("free") is True
+            or existing_block.get("price_cents") is not None
+            or existing_block.get("price") is not None
+        )
+    )
+
+    if has_existing_pricing:
+        block = dict(existing_block)
+        if description and not block.get("description"):
+            block["description"] = description
+        return block, True
+
+    block: Dict[str, Any] = dict(existing_block or {})
+    if is_free or price_cents <= 0:
+        block["free"] = True
+        block.pop("price_cents", None)
+        block.pop("price", None)
+    else:
+        block["price_cents"] = int(price_cents)
+        block["currency"] = currency or "USD"
+        block.pop("free", None)
+    if description and not block.get("description"):
+        block["description"] = description
+    return block, False
+
+
 def _contrib_update_manifest(
     bundle_dir: Path,
     filename: str,
@@ -547,17 +617,14 @@ def _contrib_update_manifest(
     description: Optional[str],
     contributor_email: str,
 ) -> None:
-    """Add/replace the manifest entry for ``filename`` and ensure ``__bundle__`` is free."""
+    """Add/replace the per-image manifest entry for ``filename``.
+
+    Bundle-level pricing (``__bundle__``) is created with ``free: true`` only
+    when there is no existing block; existing pricing is never overwritten.
+    """
     bundle_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = bundle_dir / "manifest.json"
-    data: Dict[str, Any] = {}
-    if manifest_path.is_file():
-        try:
-            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                data = raw
-        except (json.JSONDecodeError, OSError):
-            data = {}
+    data = _contrib_read_manifest(bundle_dir)
     if "__bundle__" not in data or not isinstance(data["__bundle__"], dict):
         data["__bundle__"] = {"free": True}
     entry: Dict[str, Any] = {"title": title}
@@ -594,24 +661,73 @@ def list_contributor_topics() -> Dict[str, Any]:
     }
 
 
-@router.post("/contribute")
+def _coerce_bool_form(value: Any, default: bool = False) -> bool:
+    """Parse a multipart-form-supplied bool flag."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+@router.post("/contribute", response_model=schemas.ContributePendingResponse)
 async def contribute_generic_memory(
     contributor_email: str = Form(...),
     library_topic: str = Form(...),
-    title: str = Form(...),
-    library_collection_slug: Optional[str] = Form(None),
-    description: Optional[str] = Form(None),
-    location: Optional[str] = Form(None),
-    file: UploadFile = File(...),
+    library_collection_slug: str = Form(...),
+    images_metadata: str = Form(...),
+    files: List[UploadFile] = File(...),
+    bundle_description: Optional[str] = Form(None),
+    is_free: Optional[str] = Form(None),
+    price_cents: Optional[int] = Form(0),
+    currency: Optional[str] = Form("USD"),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    """Anonymous-friendly upload of a generic memory.
+) -> schemas.ContributePendingResponse:
+    """Anonymous-friendly upload of a *bundle* of generic memories.
 
-    Accepts an email so contributions can be traced/credited; no account or
-    login is required. The image is written under
-    ``static/memory/generic/<topic>/<bundle>/`` with a manifest entry, and a
-    matching ``MemoryItem`` row is inserted so the training/quiz flows can
-    use it immediately.
+    One submission contributes a whole bundle (topic + collection slug + N
+    images + bundle pricing) — mirroring how the on-disk generic library is
+    populated through ``manifest.json``. The submission is queued for admin
+    review: files are saved to ``static/memory/pending/`` and rows are added
+    to ``pending_contribution_bundles`` / ``pending_contribution_images``.
+    Nothing is published until an admin approves the bundle.
+
+    Form fields
+    -----------
+    contributor_email
+        Required. Used only to credit / contact the submitter.
+    library_topic
+        Required free-text topic label (e.g. "Cars"). Matched to an existing
+        topic folder if one exists case-insensitively, otherwise slugified.
+    library_collection_slug
+        Required bundle name within the topic (e.g. "sports cars").
+    bundle_description
+        Optional bundle-level description; surfaced to caretakers.
+    is_free
+        ``"true"`` for a free bundle, ``"false"`` for paid. Defaults to
+        ``"false"``.
+    price_cents
+        Required when ``is_free`` is false; ignored otherwise.
+    currency
+        ISO-4217 currency code; defaults to ``"USD"``.
+    images_metadata
+        JSON string of an array, parallel to ``files``::
+
+            [{"title": "...", "description": "...?", "location": "...?"}, ...]
+    files
+        One or more uploaded images. Each entry must have a corresponding
+        metadata object at the same index.
+
+    Note
+    ----
+    If an admin later approves a bundle whose ``library_collection_slug``
+    already exists on disk with pricing, **the existing pricing is preserved**
+    — contributors cannot retroactively reprice someone else's bundle.
     """
     email = (contributor_email or "").strip()
     if not email or len(email) > _CONTRIB_EMAIL_MAX or not _CONTRIB_EMAIL_RE.match(
@@ -619,113 +735,179 @@ async def contribute_generic_memory(
     ):
         raise HTTPException(status_code=400, detail="A valid email is required")
 
-    title_clean = (title or "").strip()
-    if not title_clean:
-        raise HTTPException(status_code=400, detail="Title is required")
-    if len(title_clean) > _CONTRIB_TITLE_MAX:
-        title_clean = title_clean[:_CONTRIB_TITLE_MAX]
-
     topic_label = (library_topic or "").strip()
     if not topic_label:
         raise HTTPException(status_code=400, detail="Topic is required")
 
-    description_clean = (description or "").strip() or None
-    if description_clean and len(description_clean) > _CONTRIB_DESC_MAX:
-        description_clean = description_clean[:_CONTRIB_DESC_MAX]
-    location_clean = (location or "").strip() or None
-    if location_clean and len(location_clean) > _CONTRIB_LOCATION_MAX:
-        location_clean = location_clean[:_CONTRIB_LOCATION_MAX]
+    bundle_label = (library_collection_slug or "").strip()
+    if not bundle_label:
+        raise HTTPException(
+            status_code=400, detail="Bundle name is required",
+        )
+
+    bundle_description_clean = (bundle_description or "").strip() or None
+    if bundle_description_clean and len(bundle_description_clean) > _CONTRIB_DESC_MAX:
+        bundle_description_clean = bundle_description_clean[:_CONTRIB_DESC_MAX]
+
+    free_flag = _coerce_bool_form(is_free, default=False)
+    pc = int(price_cents or 0)
+    if pc < 0:
+        pc = 0
+    if not free_flag and pc <= 0:
+        # Treat a missing/zero price as free so we never store an invalid
+        # paid-but-zero bundle.
+        free_flag = True
+        pc = 0
+    cur = (currency or "USD").strip().upper()[:8] or "USD"
+
+    try:
+        raw_meta = json.loads(images_metadata)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="images_metadata must be a JSON array",
+        )
+    if not isinstance(raw_meta, list) or not raw_meta:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one image and one metadata entry are required",
+        )
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+    if len(files) != len(raw_meta):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Got {len(files)} file(s) but {len(raw_meta)} metadata "
+                "entries — counts must match"
+            ),
+        )
 
     topic_segment = _contrib_topic_segment(topic_label)
     if not is_safe_library_segment(topic_segment):
         raise HTTPException(status_code=400, detail="Invalid topic name")
-    bundle_segment = _contrib_bundle_segment(
-        topic_segment, library_collection_slug or _CONTRIB_DEFAULT_BUNDLE_SLUG,
-    )
+    bundle_segment = _contrib_bundle_segment(topic_segment, bundle_label)
     if not is_safe_library_segment(bundle_segment):
         raise HTTPException(status_code=400, detail="Invalid bundle name")
 
-    raw_ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    if raw_ext not in {"jpg", "jpeg", "png", "webp"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Only JPG, PNG or WEBP images are accepted",
-        )
-    if raw_ext == "jpeg":
-        raw_ext = "jpg"
+    pending_dir = STATIC_DIR / "memory" / _CONTRIB_PENDING_DIRNAME
+    pending_dir.mkdir(parents=True, exist_ok=True)
 
-    payload = await file.read()
-    if not payload:
-        raise HTTPException(status_code=400, detail="Empty file")
-    if len(payload) > _CONTRIB_MAX_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail="Image too large (12 MB max)",
-        )
-
-    bundle_dir = (
-        STATIC_DIR / "memory" / "generic" / topic_segment / bundle_segment
-    )
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}.{raw_ext}"
-    abs_path = bundle_dir / filename
-    with abs_path.open("wb") as f:
-        f.write(payload)
+    image_rows: List[Tuple[str, Dict[str, Any]]] = []  # (saved_filename, meta dict)
+    written_paths: List[Path] = []
 
     try:
-        _contrib_update_manifest(
-            bundle_dir,
-            filename,
-            title=title_clean,
-            location=location_clean,
-            description=description_clean,
-            contributor_email=email,
-        )
-    except OSError as exc:
-        try:
-            abs_path.unlink()
-        except OSError:
-            pass
-        raise HTTPException(
-            status_code=500,
-            detail=f"Could not update manifest: {exc}",
-        )
+        for idx, (upload, meta) in enumerate(zip(files, raw_meta)):
+            if not isinstance(meta, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"images_metadata[{idx}] must be an object",
+                )
+            title_clean = str(meta.get("title") or "").strip()
+            if not title_clean:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image #{idx + 1} is missing a title",
+                )
+            if len(title_clean) > _CONTRIB_TITLE_MAX:
+                title_clean = title_clean[:_CONTRIB_TITLE_MAX]
 
-    rel_path = (
-        f"static/memory/generic/{topic_segment}/{bundle_segment}/{filename}"
-    )
-    new_row = models.MemoryItem(
-        patient_id=None,
-        title=title_clean,
-        description=description_clean,
-        related_person_name=None,
-        related_person_relation=None,
-        category="image",
-        library_type="generic",
+            desc_clean = str(meta.get("description") or "").strip() or None
+            if desc_clean and len(desc_clean) > _CONTRIB_DESC_MAX:
+                desc_clean = desc_clean[:_CONTRIB_DESC_MAX]
+            loc_clean = str(meta.get("location") or "").strip() or None
+            if loc_clean and len(loc_clean) > _CONTRIB_LOCATION_MAX:
+                loc_clean = loc_clean[:_CONTRIB_LOCATION_MAX]
+
+            raw_ext = (upload.filename or "").rsplit(".", 1)[-1].lower()
+            if raw_ext not in _CONTRIB_ALLOWED_EXTS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Image #{idx + 1}: only JPG, PNG or WEBP are "
+                        "accepted"
+                    ),
+                )
+            if raw_ext == "jpeg":
+                raw_ext = "jpg"
+
+            payload = await upload.read()
+            if not payload:
+                raise HTTPException(
+                    status_code=400, detail=f"Image #{idx + 1} is empty",
+                )
+            if len(payload) > _CONTRIB_MAX_BYTES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image #{idx + 1} is too large (12 MB max)",
+                )
+
+            filename = f"{uuid.uuid4().hex}.{raw_ext}"
+            abs_path = pending_dir / filename
+            with abs_path.open("wb") as f:
+                f.write(payload)
+            written_paths.append(abs_path)
+
+            image_rows.append(
+                (
+                    filename,
+                    {
+                        "title": title_clean,
+                        "description": desc_clean,
+                        "location": loc_clean,
+                    },
+                ),
+            )
+
+        bundle_row = models.PendingContributionBundle(
+            contributor_email=email,
+            library_topic=topic_segment,
+            library_collection_slug=bundle_segment,
+            bundle_description=bundle_description_clean,
+            is_free=free_flag,
+            price_cents=pc,
+            currency=cur,
+            status="pending",
+        )
+        db.add(bundle_row)
+        db.flush()  # populate bundle_row.id without committing
+
+        for order, (filename, meta) in enumerate(image_rows):
+            rel_path = (
+                f"static/memory/{_CONTRIB_PENDING_DIRNAME}/{filename}"
+            )
+            db.add(
+                models.PendingContributionImage(
+                    bundle_id=bundle_row.id,
+                    title=meta["title"],
+                    description=meta["description"],
+                    location=meta["location"],
+                    file_path=rel_path,
+                    order_index=order,
+                ),
+            )
+        db.commit()
+        db.refresh(bundle_row)
+    except Exception:
+        db.rollback()
+        for p in written_paths:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        raise
+
+    return schemas.ContributePendingResponse(
+        status="pending",
+        pending_bundle_id=int(bundle_row.id),
+        image_count=len(image_rows),
         library_topic=topic_segment,
         library_collection_slug=bundle_segment,
-        memory_type="general",
-        year=None,
-        location=location_clean,
-        caretaker_email=None,
-        file_path=rel_path,
-        extra_file_paths=None,
+        contributor_email=email,
+        is_free=free_flag,
+        price_cents=pc,
+        currency=cur,
     )
-    db.add(new_row)
-    db.commit()
-    db.refresh(new_row)
-
-    bump_generic_library_disk_cache()
-
-    return {
-        "status": "ok",
-        "memory_id": int(new_row.id),
-        "library_topic": topic_segment,
-        "library_collection_slug": bundle_segment,
-        "file_path": rel_path,
-        "title": title_clean,
-        "contributor_email": email,
-    }
 
 
 # --- 1. UPLOAD MEMORY ---

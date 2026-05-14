@@ -495,6 +495,63 @@ class AdminNotification(Base):
     created_at = Column(DateTime, default=func.now())
 
 
+class PendingContributionBundle(Base):
+    """A multi-image bundle submitted by an anonymous contributor.
+
+    One submission = one bundle = N images, exactly like the ``manifest.json``
+    format used by the on-disk generic library. Until an admin approves the
+    bundle, files live under ``static/memory/pending/`` and nothing is wired
+    into any patient flow. On approve the entire bundle is materialized:
+    files are moved into ``static/memory/generic/<topic>/<bundle>/``, the
+    bundle's ``__bundle__`` block (free flag or price/currency) is written
+    to ``manifest.json``, per-image manifest entries are added, and a
+    ``MemoryItem`` row is created for every image. On reject all files are
+    deleted; the parent row is preserved (``status='rejected'``) for audit.
+    """
+
+    __tablename__ = "pending_contribution_bundles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    contributor_email = Column(String(254), nullable=False, index=True)
+    library_topic = Column(String(255), nullable=False)
+    library_collection_slug = Column(String(255), nullable=False)
+    bundle_description = Column(Text, nullable=True)
+    is_free = Column(Boolean, nullable=False, default=True)
+    price_cents = Column(Integer, nullable=False, default=0)
+    currency = Column(String(8), nullable=False, default="USD")
+    # one of: 'pending', 'approved', 'rejected'
+    status = Column(String(16), nullable=False, default="pending", index=True)
+    review_note = Column(Text, nullable=True)
+    reviewed_by_admin_email = Column(String(255), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class PendingContributionImage(Base):
+    """One image inside a :class:`PendingContributionBundle`.
+
+    ``file_path`` is a static-relative path (``static/memory/pending/<uuid>.<ext>``)
+    while the parent bundle is awaiting review. After approval the parent's
+    file rows are replaced with their final ``static/memory/generic/...`` paths
+    so the same row continues to point at the published asset.
+    """
+
+    __tablename__ = "pending_contribution_images"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bundle_id = Column(
+        Integer,
+        ForeignKey("pending_contribution_bundles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    location = Column(String(255), nullable=True)
+    file_path = Column(String(500), nullable=False)
+    order_index = Column(Integer, nullable=False, default=0)
+
+
 class AuthorizedUser(Base):
     """Privileged operators (e.g. admin). Seeded from env on API startup."""
 
