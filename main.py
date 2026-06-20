@@ -244,6 +244,19 @@ try:
             CREATE INDEX IF NOT EXISTS ix_patient_dismissed_library_patient
                 ON patient_dismissed_library_memories(patient_id);
 
+            CREATE TABLE IF NOT EXISTS patient_flagged_memories (
+                id SERIAL PRIMARY KEY,
+                patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+                memory_item_id INTEGER NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+                patient_note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(patient_id, memory_item_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_patient_flagged_memories_patient
+                ON patient_flagged_memories(patient_id);
+            CREATE INDEX IF NOT EXISTS ix_patient_flagged_memories_memory
+                ON patient_flagged_memories(memory_item_id);
+
             CREATE TABLE IF NOT EXISTS patient_quiz_attempts (
                 id SERIAL PRIMARY KEY,
                 patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,

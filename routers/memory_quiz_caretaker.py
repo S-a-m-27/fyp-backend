@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Dict, List, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -511,4 +512,70 @@ def delete_defined_quiz(
     if dq:
         db.delete(dq)
         db.commit()
+    return {"status": "ok"}
+
+
+@router.get(
+    "/patient-memory-flags",
+    response_model=List[schemas.PatientMemoryFlagCaretakerItem],
+)
+def list_patient_memory_flags(
+    caretaker_email: str = Query(..., alias="email"),
+    db: Session = Depends(get_db),
+):
+    """Patient comfort/safety flags (e.g. distress or PTSD-related triggers during training)."""
+    rows = (
+        db.query(
+            models.PatientFlaggedMemory,
+            models.Patient.name,
+            models.MemoryItem,
+        )
+        .join(models.Patient, models.Patient.id == models.PatientFlaggedMemory.patient_id)
+        .join(
+            models.MemoryItem,
+            models.MemoryItem.id == models.PatientFlaggedMemory.memory_item_id,
+        )
+        .filter(models.Patient.caretaker_email == caretaker_email)
+        .order_by(models.PatientFlaggedMemory.created_at.desc())
+        .all()
+    )
+    out: List[schemas.PatientMemoryFlagCaretakerItem] = []
+    for flag, patient_name, mem in rows:
+        out.append(
+            schemas.PatientMemoryFlagCaretakerItem(
+                flag_id=int(flag.id),
+                patient_id=int(flag.patient_id),
+                patient_name=(patient_name or "").strip() or "Patient",
+                memory_item_id=int(mem.id),
+                file_path=(mem.file_path or "").replace("\\", "/"),
+                library_type=mem.library_type,
+                memory_title=(mem.title or "").strip() or "Memory",
+                related_person_name=getattr(mem, "related_person_name", None),
+                patient_note=flag.patient_note,
+                created_at=flag.created_at or datetime.utcnow(),
+            )
+        )
+    return out
+
+
+@router.delete("/patient-memory-flags/{flag_id}")
+def delete_patient_memory_flag(
+    flag_id: int,
+    caretaker_email: str = Query(..., alias="email"),
+    db: Session = Depends(get_db),
+):
+    """Remove a flag after clinical review; patient may see the memory in training again."""
+    row = (
+        db.query(models.PatientFlaggedMemory)
+        .join(models.Patient, models.Patient.id == models.PatientFlaggedMemory.patient_id)
+        .filter(
+            models.PatientFlaggedMemory.id == flag_id,
+            models.Patient.caretaker_email == caretaker_email,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Flag not found")
+    db.delete(row)
+    db.commit()
     return {"status": "ok"}

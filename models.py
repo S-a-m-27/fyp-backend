@@ -155,6 +155,10 @@ class MemoryItem(Base):
     file_path = Column(String)
     # JSON array of extra image paths (same memory, multiple photos of the person).
     extra_file_paths = Column(Text, nullable=True)
+    # Caretaker-written hints shown one-at-a-time on the quiz screen.
+    hint_1 = Column(String, nullable=True)
+    hint_2 = Column(String, nullable=True)
+    hint_3 = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
 
     patient = relationship("Patient", back_populates="memories")
@@ -222,6 +226,35 @@ class PatientDismissedLibraryMemory(Base):
         nullable=False,
         index=True,
     )
+    created_at = Column(DateTime, default=func.now())
+
+
+class PatientFlaggedMemory(Base):
+    """Patient reported content as disturbing during training; caretaker reviews. Memory is not deleted."""
+
+    __tablename__ = "patient_flagged_memories"
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "memory_item_id",
+            name="uq_patient_flagged_memory",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    memory_item_id = Column(
+        Integer,
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    patient_note = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
 
 

@@ -136,6 +136,9 @@ class MemoryGalleryItem(BaseModel):
     title: Optional[str] = None
     location: Optional[str] = None
     description: Optional[str] = None
+    hint_1: Optional[str] = None
+    hint_2: Optional[str] = None
+    hint_3: Optional[str] = None
     file_path: str
     category: str
     library_type: str
@@ -155,7 +158,33 @@ class PatientTrainingCompleteRequest(BaseModel):
 
 class PatientTrainingMemoryDeleteResponse(BaseModel):
     status: str = "ok"
-    action: str  # dismissed_library | deleted_personal | removed_shared_access
+    action: str  # dismissed_library | deleted_personal | removed_shared_access (legacy)
+
+
+class PatientFlagMemoryRequest(BaseModel):
+    patient_note: Optional[str] = None
+
+
+class PatientTrainingMemoryFlagResponse(BaseModel):
+    status: str = "ok"
+    action: str = "flagged_for_caretaker"
+    flag_id: int
+
+
+class PatientMemoryFlagCaretakerItem(BaseModel):
+    flag_id: int
+    patient_id: int
+    patient_name: str
+    memory_item_id: int
+    file_path: str
+    library_type: Optional[str] = None
+    memory_title: str = ""
+    related_person_name: Optional[str] = None
+    patient_note: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 class PatientTrainingCompleteResponse(BaseModel):
@@ -219,6 +248,9 @@ class MemoryItemSchema(BaseModel):
     patient_id: Optional[int] = None
     title: str
     description: Optional[str] = None
+    hint_1: Optional[str] = None
+    hint_2: Optional[str] = None
+    hint_3: Optional[str] = None
     related_person_name: Optional[str] = None
     related_person_relation: Optional[str] = None
     category: str

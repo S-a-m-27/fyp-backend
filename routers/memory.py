@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from sqlalchemy import and_, delete, func, or_, tuple_
+from sqlalchemy import and_, func, or_, tuple_
 from sqlalchemy.orm import Session
 
 import models
@@ -285,7 +285,7 @@ def _quiz_choice_label(m: models.MemoryItem) -> str:
 
 
 def _quiz_question_item_min(m: models.MemoryItem) -> Dict[str, Any]:
-    """Minimal fields for quiz UI (no location/description spoilers)."""
+    """Minimal fields for quiz UI. Hints are included so the patient can reveal them."""
     return {
         "id": int(m.id),
         "title": _quiz_display_title(m),
@@ -295,6 +295,9 @@ def _quiz_question_item_min(m: models.MemoryItem) -> Dict[str, Any]:
         "category": m.category or "image",
         "library_type": m.library_type,
         "related_person_name": getattr(m, "related_person_name", None),
+        "hint_1": getattr(m, "hint_1", None) or None,
+        "hint_2": getattr(m, "hint_2", None) or None,
+        "hint_3": getattr(m, "hint_3", None) or None,
     }
 
 
@@ -410,12 +413,24 @@ def _dismissed_library_memory_ids(db: Session, patient_id: int) -> Set[int]:
     return {int(r[0]) for r in rows if r[0] is not None}
 
 
+def _flagged_memory_ids(db: Session, patient_id: int) -> Set[int]:
+    rows = (
+        db.query(models.PatientFlaggedMemory.memory_item_id)
+        .filter(models.PatientFlaggedMemory.patient_id == patient_id)
+        .all()
+    )
+    return {int(r[0]) for r in rows if r[0] is not None}
+
+
 def _eligible_memories_query(db: Session, patient_id: int):
-    """Same as base, but hide generic library rows the patient removed during training."""
+    """Same as base, but hide generic library rows the patient removed during training
+    and any memory this patient has flagged as disturbing (until caretaker clears the flag)."""
     q = _eligible_memories_base_query(db, patient_id)
     hidden_ids = _dismissed_library_memory_ids(db, patient_id)
-    if hidden_ids:
-        q = q.filter(~models.MemoryItem.id.in_(list(hidden_ids)))
+    flagged_ids = _flagged_memory_ids(db, patient_id)
+    hide = hidden_ids | flagged_ids
+    if hide:
+        q = q.filter(~models.MemoryItem.id.in_(list(hide)))
     return q
 
 
@@ -590,19 +605,22 @@ def get_patient_training_gallery(
     return [_memory_to_gallery_dict(m) for m in rows]
 
 
-@router.delete(
-    "/patient-training-memory/{patient_id}/{memory_id}",
-    response_model=schemas.PatientTrainingMemoryDeleteResponse,
+@router.post(
+    "/patient-training-memory/{patient_id}/{memory_id}/flag",
+    response_model=schemas.PatientTrainingMemoryFlagResponse,
 )
-def delete_memory_during_patient_training(
+def flag_memory_during_patient_training(
     patient_id: int,
     memory_id: int,
+    body: schemas.PatientFlagMemoryRequest,
     passcode: Optional[str] = Query(None),
     qr_token: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Patient removes a disturbing item: hide generic library images, delete own personal
-    uploads, or drop shared personal access. Requires passcode or QR token."""
+    """Patient flags content that feels distressing or triggering (e.g. PTSD-related) during training.
+
+    Does not delete the memory; caretaker can review and decide next steps.
+    """
     _catalog_patient_auth(db, patient_id, passcode, qr_token)
     mem = (
         _eligible_memories_base_query(db, patient_id)
@@ -620,73 +638,32 @@ def delete_memory_during_patient_training(
         models.PatientQuizMemoryItem.memory_item_id == memory_id,
     ).delete(synchronize_session=False)
 
-    lt = (mem.library_type or "").lower()
-    if lt == "generic":
-        exists = (
-            db.query(models.PatientDismissedLibraryMemory)
-            .filter(
-                models.PatientDismissedLibraryMemory.patient_id == patient_id,
-                models.PatientDismissedLibraryMemory.memory_item_id == memory_id,
-            )
-            .first()
+    note = (body.patient_note or "").strip() or None
+    existing = (
+        db.query(models.PatientFlaggedMemory)
+        .filter(
+            models.PatientFlaggedMemory.patient_id == patient_id,
+            models.PatientFlaggedMemory.memory_item_id == memory_id,
         )
-        if not exists:
-            db.add(
-                models.PatientDismissedLibraryMemory(
-                    patient_id=patient_id,
-                    memory_item_id=memory_id,
-                )
-            )
-        db.commit()
-        return schemas.PatientTrainingMemoryDeleteResponse(
-            status="ok",
-            action="dismissed_library",
-        )
-
-    if lt != "personal":
-        db.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail="This memory type cannot be removed here.",
-        )
-
-    if mem.patient_id == patient_id:
-        paths = _memory_all_file_paths(mem)
-        db.delete(mem)
-        db.commit()
-        for p in paths:
-            if not p:
-                continue
-            abs_p = media_path(p)
-            if abs_p.is_file():
-                try:
-                    abs_p.unlink()
-                except OSError:
-                    pass
-        return schemas.PatientTrainingMemoryDeleteResponse(
-            status="ok",
-            action="deleted_personal",
-        )
-
-    res = db.execute(
-        delete(models.memory_patient_access).where(
-            and_(
-                models.memory_patient_access.c.memory_id == memory_id,
-                models.memory_patient_access.c.patient_id == patient_id,
-            )
-        )
+        .first()
     )
-    rc = getattr(res, "rowcount", None)
-    if rc is not None and rc < 1:
-        db.rollback()
-        raise HTTPException(
-            status_code=404,
-            detail="Could not remove access to this memory.",
+    if existing:
+        existing.patient_note = note
+        row = existing
+    else:
+        row = models.PatientFlaggedMemory(
+            patient_id=patient_id,
+            memory_item_id=memory_id,
+            patient_note=note,
         )
+        db.add(row)
+    db.flush()
     db.commit()
-    return schemas.PatientTrainingMemoryDeleteResponse(
+    db.refresh(row)
+    return schemas.PatientTrainingMemoryFlagResponse(
         status="ok",
-        action="removed_shared_access",
+        action="flagged_for_caretaker",
+        flag_id=int(row.id),
     )
 
 
@@ -878,11 +855,13 @@ async def get_memory_quiz(
         )
         if len(questions) == n_slots:
             dismissed = _dismissed_library_memory_ids(db, patient_id)
+            flagged = _flagged_memory_ids(db, patient_id)
+            hidden_quiz = dismissed | flagged
             remaining = [
                 q
                 for q in questions
                 if q.memory_item_id not in excluded_list
-                and q.memory_item_id not in dismissed
+                and q.memory_item_id not in hidden_quiz
             ]
             if not remaining:
                 return {
