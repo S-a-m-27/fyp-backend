@@ -298,6 +298,9 @@ def _quiz_question_item_min(m: models.MemoryItem) -> Dict[str, Any]:
         "hint_1": getattr(m, "hint_1", None) or None,
         "hint_2": getattr(m, "hint_2", None) or None,
         "hint_3": getattr(m, "hint_3", None) or None,
+        "hint_1_image_path": getattr(m, "hint_1_image_path", None) or None,
+        "hint_2_image_path": getattr(m, "hint_2_image_path", None) or None,
+        "hint_3_image_path": getattr(m, "hint_3_image_path", None) or None,
     }
 
 

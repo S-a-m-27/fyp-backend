@@ -139,6 +139,9 @@ class MemoryGalleryItem(BaseModel):
     hint_1: Optional[str] = None
     hint_2: Optional[str] = None
     hint_3: Optional[str] = None
+    hint_1_image_path: Optional[str] = None
+    hint_2_image_path: Optional[str] = None
+    hint_3_image_path: Optional[str] = None
     file_path: str
     category: str
     library_type: str
@@ -251,6 +254,9 @@ class MemoryItemSchema(BaseModel):
     hint_1: Optional[str] = None
     hint_2: Optional[str] = None
     hint_3: Optional[str] = None
+    hint_1_image_path: Optional[str] = None
+    hint_2_image_path: Optional[str] = None
+    hint_3_image_path: Optional[str] = None
     related_person_name: Optional[str] = None
     related_person_relation: Optional[str] = None
     category: str

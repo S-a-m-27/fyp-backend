@@ -19,6 +19,7 @@ This router covers everything the caretaker needs from the dashboard:
 """
 
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ from typing import List, Optional
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -43,12 +45,62 @@ from database import get_db
 from routers.ai_training import train_faces_from_paths
 
 router = APIRouter(prefix="/memory/personal", tags=["Personal Memories"])
+logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = str(STATIC_DIR / "memory" / "personal")
+HINT_IMAGE_DIR = str(STATIC_DIR / "memory" / "personal" / "hints")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(HINT_IMAGE_DIR, exist_ok=True)
 
 
 # ---------- helpers ----------
+
+
+async def _save_hint_image(upload: Optional[UploadFile]) -> Optional[str]:
+    """Save one optional hint image; returns relative static path or None."""
+    if upload is None:
+        return None
+    content = await upload.read()
+    if not content:
+        return None
+    filename = (upload.filename or "").strip()
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+    if ext not in ("jpg", "jpeg", "png", "webp", "gif"):
+        ext = "jpg"
+    safe_name = f"{uuid.uuid4().hex}.{ext}"
+    rel_path = f"static/memory/personal/hints/{safe_name}".replace("\\", "/")
+    abs_path = media_path(rel_path)
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(abs_path, "wb") as f:
+        f.write(content)
+    return rel_path
+
+
+def _background_train_faces(name: str, relation: str, paths: List[str]) -> None:
+    """Run face training after upload response so the app can navigate back immediately."""
+    try:
+        train_faces_from_paths(name, relation, paths)
+    except HTTPException as he:
+        logger.warning(
+            "[upload] background face training failed for %s: %s",
+            name,
+            he.detail,
+        )
+    except Exception as e:
+        logger.warning(
+            "[upload] background face training failed for %s: %s",
+            name,
+            e,
+        )
+
+
+def _hint_image_paths(memory: models.MemoryItem) -> List[str]:
+    out: List[str] = []
+    for attr in ("hint_1_image_path", "hint_2_image_path", "hint_3_image_path"):
+        p = getattr(memory, attr, None)
+        if p and str(p).strip():
+            out.append(str(p).strip())
+    return out
 
 
 def _all_file_paths(memory: models.MemoryItem) -> List[str]:
@@ -110,6 +162,9 @@ def _serialize(memory: models.MemoryItem) -> dict:
         "hint_1": getattr(memory, "hint_1", None),
         "hint_2": getattr(memory, "hint_2", None),
         "hint_3": getattr(memory, "hint_3", None),
+        "hint_1_image_path": getattr(memory, "hint_1_image_path", None),
+        "hint_2_image_path": getattr(memory, "hint_2_image_path", None),
+        "hint_3_image_path": getattr(memory, "hint_3_image_path", None),
         "related_person_name": memory.related_person_name,
         "related_person_relation": memory.related_person_relation,
         "category": memory.category,
@@ -174,6 +229,7 @@ def _get_owned_memory(
 
 @router.post("/upload", response_model=schemas.MemoryItemSchema)
 async def upload_personal_memory(
+    background_tasks: BackgroundTasks,
     title: Optional[str] = Form(None),
     patient_id: int = Form(...),
     caretaker_email: str = Form(...),
@@ -185,6 +241,9 @@ async def upload_personal_memory(
     hint_1: Optional[str] = Form(None),
     hint_2: Optional[str] = Form(None),
     hint_3: Optional[str] = Form(None),
+    hint_1_image: Optional[UploadFile] = File(None),
+    hint_2_image: Optional[UploadFile] = File(None),
+    hint_3_image: Optional[UploadFile] = File(None),
     related_person_name: Optional[str] = Form(None),
     related_person_relation: Optional[str] = Form(None),
     files: List[UploadFile] = File(...),
@@ -223,6 +282,10 @@ async def upload_personal_memory(
     primary = saved_paths[0]
     extra_json = json.dumps(saved_paths[1:]) if len(saved_paths) > 1 else None
 
+    hint_1_image_path = await _save_hint_image(hint_1_image)
+    hint_2_image_path = await _save_hint_image(hint_2_image)
+    hint_3_image_path = await _save_hint_image(hint_3_image)
+
     # 3. Persist.
     rname = (related_person_name or "").strip() or None
     rrel = (related_person_relation or "").strip() or None
@@ -237,6 +300,9 @@ async def upload_personal_memory(
         hint_1=(hint_1 or "").strip() or None,
         hint_2=(hint_2 or "").strip() or None,
         hint_3=(hint_3 or "").strip() or None,
+        hint_1_image_path=hint_1_image_path,
+        hint_2_image_path=hint_2_image_path,
+        hint_3_image_path=hint_3_image_path,
         related_person_name=rname,
         related_person_relation=rrel,
         category=category,
@@ -267,29 +333,17 @@ async def upload_personal_memory(
         )
     )
     if run_face_training:
-        try:
-            train_out = train_faces_from_paths(
-                rname,
-                (rrel or "Unknown").strip(),
-                saved_paths,
-            )
-            ai_training_result = schemas.FaceTrainingResult(
-                status="ok",
-                detail=train_out.get("message"),
-                images_processed=train_out.get("images_processed"),
-            )
-        except HTTPException as he:
-            ai_training_result = schemas.FaceTrainingResult(
-                status="error",
-                detail=str(he.detail) if he.detail else "Face training failed",
-                images_processed=0,
-            )
-        except Exception as e:
-            ai_training_result = schemas.FaceTrainingResult(
-                status="error",
-                detail=str(e),
-                images_processed=0,
-            )
+        background_tasks.add_task(
+            _background_train_faces,
+            rname,
+            (rrel or "Unknown").strip(),
+            list(saved_paths),
+        )
+        ai_training_result = schemas.FaceTrainingResult(
+            status="pending",
+            detail="Face training started in background",
+            images_processed=0,
+        )
     if ai_training_result is not None:
         out["ai_training"] = ai_training_result.model_dump()
 
@@ -407,7 +461,7 @@ def delete_personal_memory(
 ):
     memory = _get_owned_memory(memory_id, caretaker_email, db)
 
-    paths_to_remove = _all_file_paths(memory)
+    paths_to_remove = _all_file_paths(memory) + _hint_image_paths(memory)
     db.delete(memory)
     db.commit()
 

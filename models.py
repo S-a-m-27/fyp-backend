@@ -159,6 +159,9 @@ class MemoryItem(Base):
     hint_1 = Column(String, nullable=True)
     hint_2 = Column(String, nullable=True)
     hint_3 = Column(String, nullable=True)
+    hint_1_image_path = Column(String, nullable=True)
+    hint_2_image_path = Column(String, nullable=True)
+    hint_3_image_path = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
 
     patient = relationship("Patient", back_populates="memories")

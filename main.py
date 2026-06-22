@@ -129,6 +129,13 @@ try:
             CREATE INDEX IF NOT EXISTS ix_memory_items_library_topic_collection
                 ON memory_items (library_topic, library_collection_slug);
 
+            ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_1 VARCHAR(500);
+            ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_2 VARCHAR(500);
+            ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_3 VARCHAR(500);
+            ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_1_image_path VARCHAR(500);
+            ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_2_image_path VARCHAR(500);
+            ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_3_image_path VARCHAR(500);
+
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS memory_training_completed BOOLEAN DEFAULT FALSE;
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS wellness_intro_completed BOOLEAN DEFAULT FALSE;
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS training_sessions_completed INTEGER DEFAULT 0;
