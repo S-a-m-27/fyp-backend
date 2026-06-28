@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 # --- 1. Caretaker Signup ---
@@ -59,9 +59,47 @@ class PatientSchema(BaseModel):
     profile_photo_path: Optional[str] = None
     caretaker_email: Optional[str] = None
     memory_training_completed: bool = False
+    quiz_hints_allowed: bool = False
 
     class Config:
         from_attributes = True
+
+
+class PatientQuizHintSettingsResponse(BaseModel):
+    quiz_hints_allowed: bool = False
+    has_hint_memories: bool = False
+
+
+class PatientQuizHintSettingsUpdate(BaseModel):
+    quiz_hints_allowed: bool
+
+
+class QuizHintUsageLogIn(BaseModel):
+    memory_item_id: int
+    hint_number: int = Field(..., ge=1, le=3)
+
+
+class QuizHintUsageLogOut(BaseModel):
+    id: int
+    status: str = "ok"
+
+
+class PatientQuizHintActivityItem(BaseModel):
+    id: int
+    memory_item_id: int
+    hint_number: int
+    used_at: datetime
+    memory_title: str
+    person_name: Optional[str] = None
+    person_relation: Optional[str] = None
+    memory_image_path: Optional[str] = None
+    hint_text: Optional[str] = None
+
+
+class PatientQuizHintActivityResponse(BaseModel):
+    total_count: int = 0
+    last_7_days_count: int = 0
+    items: List["PatientQuizHintActivityItem"] = []
 
 
 class GenericTopicInfo(BaseModel):

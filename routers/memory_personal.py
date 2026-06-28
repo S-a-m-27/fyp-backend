@@ -22,7 +22,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import (
@@ -101,6 +101,54 @@ def _hint_image_paths(memory: models.MemoryItem) -> List[str]:
         if p and str(p).strip():
             out.append(str(p).strip())
     return out
+
+
+def _memory_has_hints(memory: models.MemoryItem) -> bool:
+    for i in (1, 2, 3):
+        if (getattr(memory, f"hint_{i}", None) or "").strip():
+            return True
+        if (getattr(memory, f"hint_{i}_image_path", None) or "").strip():
+            return True
+    return False
+
+
+def _get_caretaker_patient(
+    patient_id: int, caretaker_email: str, db: Session
+) -> models.Patient:
+    patient = (
+        db.query(models.Patient)
+        .filter(
+            models.Patient.id == patient_id,
+            models.Patient.caretaker_email == caretaker_email,
+        )
+        .first()
+    )
+    if not patient:
+        raise HTTPException(
+            status_code=404,
+            detail="Patient not found for this caretaker",
+        )
+    return patient
+
+
+def _patient_visible_personal_memories_query(db: Session, patient_id: int):
+    shared_ids_subq = (
+        db.query(models.memory_patient_access.c.memory_id)
+        .filter(models.memory_patient_access.c.patient_id == patient_id)
+        .subquery()
+    )
+    return db.query(models.MemoryItem).filter(
+        models.MemoryItem.library_type == "personal",
+        or_(
+            models.MemoryItem.patient_id == patient_id,
+            models.MemoryItem.id.in_(shared_ids_subq),
+        ),
+    )
+
+
+def _patient_has_hint_memories(db: Session, patient_id: int) -> bool:
+    rows = _patient_visible_personal_memories_query(db, patient_id).all()
+    return any(_memory_has_hints(m) for m in rows)
 
 
 def _all_file_paths(memory: models.MemoryItem) -> List[str]:
@@ -348,6 +396,133 @@ async def upload_personal_memory(
         out["ai_training"] = ai_training_result.model_dump()
 
     return out
+
+
+@router.get(
+    "/patient/{patient_id}/quiz-hint-settings",
+    response_model=schemas.PatientQuizHintSettingsResponse,
+)
+def get_patient_quiz_hint_settings(
+    patient_id: int,
+    caretaker_email: str = Query(..., alias="email"),
+    db: Session = Depends(get_db),
+):
+    """Caretaker: read Allow Hint toggle state + whether any memory has hints."""
+    patient = _get_caretaker_patient(patient_id, caretaker_email, db)
+    return schemas.PatientQuizHintSettingsResponse(
+        quiz_hints_allowed=bool(getattr(patient, "quiz_hints_allowed", False)),
+        has_hint_memories=_patient_has_hint_memories(db, patient_id),
+    )
+
+
+@router.patch(
+    "/patient/{patient_id}/quiz-hint-settings",
+    response_model=schemas.PatientQuizHintSettingsResponse,
+)
+def update_patient_quiz_hint_settings(
+    patient_id: int,
+    payload: schemas.PatientQuizHintSettingsUpdate,
+    caretaker_email: str = Query(..., alias="email"),
+    db: Session = Depends(get_db),
+):
+    """Caretaker: turn quiz hints on/off for one patient."""
+    patient = _get_caretaker_patient(patient_id, caretaker_email, db)
+    patient.quiz_hints_allowed = bool(payload.quiz_hints_allowed)
+    db.commit()
+    db.refresh(patient)
+    return schemas.PatientQuizHintSettingsResponse(
+        quiz_hints_allowed=bool(patient.quiz_hints_allowed),
+        has_hint_memories=_patient_has_hint_memories(db, patient_id),
+    )
+
+
+def _memory_activity_label(memory: models.MemoryItem) -> tuple:
+    title = (memory.title or "").strip() or "Untitled"
+    person = (getattr(memory, "related_person_name", None) or "").strip() or None
+    relation = (getattr(memory, "related_person_relation", None) or "").strip() or None
+    return title, person, relation
+
+
+def _memory_hint_text(memory: Optional[models.MemoryItem], hint_number: int) -> Optional[str]:
+    if not memory or hint_number < 1 or hint_number > 3:
+        return None
+    text = (getattr(memory, f"hint_{hint_number}", None) or "").strip()
+    return text or None
+
+
+@router.get(
+    "/patient/{patient_id}/quiz-hint-activity",
+    response_model=schemas.PatientQuizHintActivityResponse,
+)
+def get_patient_quiz_hint_activity(
+    patient_id: int,
+    caretaker_email: str = Query(..., alias="email"),
+    limit: int = Query(30, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Caretaker: see when this patient used quiz hints."""
+    _get_caretaker_patient(patient_id, caretaker_email, db)
+
+    rows = (
+        db.query(models.PatientQuizHintUsage)
+        .filter(models.PatientQuizHintUsage.patient_id == patient_id)
+        .order_by(models.PatientQuizHintUsage.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    mem_ids = {int(r.memory_item_id) for r in rows}
+    mem_map = {}
+    if mem_ids:
+        for m in (
+            db.query(models.MemoryItem)
+            .filter(models.MemoryItem.id.in_(mem_ids))
+            .all()
+        ):
+            mem_map[int(m.id)] = m
+
+    now = datetime.utcnow()
+    week_ago = now - timedelta(days=7)
+
+    total_count = (
+        db.query(models.PatientQuizHintUsage)
+        .filter(models.PatientQuizHintUsage.patient_id == patient_id)
+        .count()
+    )
+    last_7_days_count = (
+        db.query(models.PatientQuizHintUsage)
+        .filter(
+            models.PatientQuizHintUsage.patient_id == patient_id,
+            models.PatientQuizHintUsage.created_at >= week_ago,
+        )
+        .count()
+    )
+
+    items = []
+    for r in rows:
+        mem = mem_map.get(int(r.memory_item_id))
+        title, person, relation = (
+            _memory_activity_label(mem) if mem else ("Unknown memory", None, None)
+        )
+        items.append(
+            schemas.PatientQuizHintActivityItem(
+                id=int(r.id),
+                memory_item_id=int(r.memory_item_id),
+                hint_number=int(r.hint_number),
+                used_at=r.created_at,
+                memory_title=title,
+                person_name=person,
+                person_relation=relation,
+                memory_image_path=mem.file_path if mem else None,
+                hint_text=_memory_hint_text(mem, int(r.hint_number)),
+            )
+        )
+
+    return schemas.PatientQuizHintActivityResponse(
+        total_count=total_count,
+        last_7_days_count=last_7_days_count,
+        items=items,
+    )
 
 
 @router.get("/patient/{patient_id}", response_model=List[schemas.MemoryItemSchema])

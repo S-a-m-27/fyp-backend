@@ -304,6 +304,32 @@ def _quiz_question_item_min(m: models.MemoryItem) -> Dict[str, Any]:
     }
 
 
+def _patient_quiz_hints_allowed(db: Session, patient_id: int) -> bool:
+    p = db.query(models.Patient).filter(models.Patient.id == patient_id).first()
+    if not p:
+        return False
+    return bool(getattr(p, "quiz_hints_allowed", False))
+
+
+def _quiz_item_with_hint_policy(
+    db: Session, patient_id: int, qi: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Strip hint fields from quiz JSON when caretaker has not allowed hints for this patient."""
+    if _patient_quiz_hints_allowed(db, patient_id):
+        return qi
+    out = dict(qi)
+    for key in (
+        "hint_1",
+        "hint_2",
+        "hint_3",
+        "hint_1_image_path",
+        "hint_2_image_path",
+        "hint_3_image_path",
+    ):
+        out[key] = None
+    return out
+
+
 def _training_image_count(mems: List[models.MemoryItem]) -> int:
     return sum(
         1
@@ -919,11 +945,14 @@ async def get_memory_quiz(
                             }
                 except (json.JSONDecodeError, TypeError, ValueError, IndexError):
                     pass
+            hints_allowed = _patient_quiz_hints_allowed(db, patient_id)
+            qi = _quiz_item_with_hint_policy(db, patient_id, qi)
             return {
                 "status": "ongoing",
                 "quiz_format": "caretaker_defined",
                 "required_correct_total": n_slots,
                 "requires_face_verify": is_personal,
+                "quiz_hints_allowed": hints_allowed,
                 "question_item": qi,
                 "shuffled_options": opts,
             }
@@ -996,12 +1025,17 @@ async def get_memory_quiz(
     random.shuffle(shuffled_options)
 
     is_personal = (correct_item.library_type or "").lower() == "personal"
+    hints_allowed = _patient_quiz_hints_allowed(db, patient_id)
+    qi = _quiz_item_with_hint_policy(
+        db, patient_id, _quiz_question_item_min(correct_item)
+    )
     return {
         "status": "ongoing",
         "quiz_format": "legacy_pool",
         "required_correct_total": tgt,
         "requires_face_verify": is_personal,
-        "question_item": _quiz_question_item_min(correct_item),
+        "quiz_hints_allowed": hints_allowed,
+        "question_item": qi,
         "shuffled_options": shuffled_options,
     }
 
@@ -1044,6 +1078,45 @@ def record_quiz_attempt_finish(
         id=int(row.id),
         training_sessions_reset=reset,
     )
+
+
+@router.post(
+    "/quiz/{patient_id}/record-hint-usage",
+    response_model=schemas.QuizHintUsageLogOut,
+)
+def record_quiz_hint_usage(
+    patient_id: int,
+    body: schemas.QuizHintUsageLogIn,
+    passcode: Optional[str] = Query(None),
+    qr_token: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Patient revealed a hint during quiz — log for caretaker review."""
+    _catalog_patient_auth(db, patient_id, passcode, qr_token)
+    if not _patient_quiz_hints_allowed(db, patient_id):
+        raise HTTPException(status_code=403, detail="Hints are not allowed for this patient")
+
+    hint_num = int(body.hint_number)
+    if hint_num < 1 or hint_num > 3:
+        raise HTTPException(status_code=400, detail="hint_number must be 1, 2, or 3")
+
+    mem = (
+        db.query(models.MemoryItem)
+        .filter(models.MemoryItem.id == body.memory_item_id)
+        .first()
+    )
+    if not mem:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    row = models.PatientQuizHintUsage(
+        patient_id=patient_id,
+        memory_item_id=int(body.memory_item_id),
+        hint_number=hint_num,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return schemas.QuizHintUsageLogOut(id=int(row.id))
 
 
 def _norm_quiz_label(s: Optional[str]) -> str:

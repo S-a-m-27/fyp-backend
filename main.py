@@ -139,6 +139,8 @@ try:
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS memory_training_completed BOOLEAN DEFAULT FALSE;
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS wellness_intro_completed BOOLEAN DEFAULT FALSE;
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS training_sessions_completed INTEGER DEFAULT 0;
+            ALTER TABLE patients ADD COLUMN IF NOT EXISTS quiz_hints_allowed BOOLEAN DEFAULT FALSE;
+            UPDATE patients SET quiz_hints_allowed = FALSE WHERE quiz_hints_allowed IS NULL;
 
             CREATE TABLE IF NOT EXISTS memory_image_ratings (
                 {_mir_id_pk}
@@ -276,6 +278,18 @@ try:
             );
             CREATE INDEX IF NOT EXISTS ix_patient_quiz_attempts_patient
                 ON patient_quiz_attempts(patient_id);
+
+            CREATE TABLE IF NOT EXISTS patient_quiz_hint_usage (
+                id SERIAL PRIMARY KEY,
+                patient_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+                memory_item_id INTEGER NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+                hint_number INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_patient_quiz_hint_usage_patient
+                ON patient_quiz_hint_usage(patient_id);
+            CREATE INDEX IF NOT EXISTS ix_patient_quiz_hint_usage_created
+                ON patient_quiz_hint_usage(created_at DESC);
             """
         ))
         conn.commit()

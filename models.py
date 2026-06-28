@@ -98,6 +98,8 @@ class Patient(Base):
     wellness_intro_completed = Column(Boolean, default=False, nullable=False)
     # Guided training sessions (0–3); quiz mode unlocks at 3.
     training_sessions_completed = Column(Integer, default=0, nullable=False)
+    # Caretaker toggle: when True, patient quiz shows uploaded memory hints.
+    quiz_hints_allowed = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=func.now())
 
     caretaker = relationship(
@@ -278,6 +280,28 @@ class PatientQuizAttempt(Base):
     wrong_count = Column(Integer, nullable=False, default=0)
     target_score = Column(Integer, nullable=False)
     passed = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=func.now())
+
+
+class PatientQuizHintUsage(Base):
+    """Log when a patient reveals a quiz hint (caretaker can review per patient)."""
+
+    __tablename__ = "patient_quiz_hint_usage"
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    memory_item_id = Column(
+        Integer,
+        ForeignKey("memory_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    hint_number = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=func.now())
 
 
