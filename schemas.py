@@ -77,6 +77,7 @@ class PatientQuizHintSettingsUpdate(BaseModel):
 class QuizHintUsageLogIn(BaseModel):
     memory_item_id: int
     hint_number: int = Field(..., ge=1, le=3)
+    session_id: Optional[str] = None
 
 
 class QuizHintUsageLogOut(BaseModel):
@@ -84,22 +85,42 @@ class QuizHintUsageLogOut(BaseModel):
     status: str = "ok"
 
 
-class PatientQuizHintActivityItem(BaseModel):
-    id: int
+class QuizHintAudioPlayIn(BaseModel):
     memory_item_id: int
+    hint_number: int = Field(..., ge=1, le=3)
+    session_id: str
+
+
+class QuizHintAudioPlayOut(BaseModel):
+    id: int
+    audio_played: bool = True
+    status: str = "ok"
+
+
+class PatientQuizHintSessionHintItem(BaseModel):
+    id: int
     hint_number: int
+    hint_text: Optional[str] = None
+    hint_has_audio: bool = False
+    hint_audio_played: bool = False
     used_at: datetime
+
+
+class PatientQuizHintActivitySession(BaseModel):
+    session_id: str
+    memory_item_id: int
     memory_title: str
     person_name: Optional[str] = None
     person_relation: Optional[str] = None
     memory_image_path: Optional[str] = None
-    hint_text: Optional[str] = None
+    started_at: datetime
+    hints_used: List[PatientQuizHintSessionHintItem] = []
 
 
 class PatientQuizHintActivityResponse(BaseModel):
-    total_count: int = 0
-    last_7_days_count: int = 0
-    items: List["PatientQuizHintActivityItem"] = []
+    total_sessions: int = 0
+    last_7_days_sessions: int = 0
+    sessions: List[PatientQuizHintActivitySession] = []
 
 
 class GenericTopicInfo(BaseModel):
@@ -180,6 +201,9 @@ class MemoryGalleryItem(BaseModel):
     hint_1_image_path: Optional[str] = None
     hint_2_image_path: Optional[str] = None
     hint_3_image_path: Optional[str] = None
+    hint_1_audio_path: Optional[str] = None
+    hint_2_audio_path: Optional[str] = None
+    hint_3_audio_path: Optional[str] = None
     file_path: str
     category: str
     library_type: str
@@ -295,6 +319,9 @@ class MemoryItemSchema(BaseModel):
     hint_1_image_path: Optional[str] = None
     hint_2_image_path: Optional[str] = None
     hint_3_image_path: Optional[str] = None
+    hint_1_audio_path: Optional[str] = None
+    hint_2_audio_path: Optional[str] = None
+    hint_3_audio_path: Optional[str] = None
     related_person_name: Optional[str] = None
     related_person_relation: Optional[str] = None
     category: str

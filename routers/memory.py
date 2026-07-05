@@ -301,6 +301,9 @@ def _quiz_question_item_min(m: models.MemoryItem) -> Dict[str, Any]:
         "hint_1_image_path": getattr(m, "hint_1_image_path", None) or None,
         "hint_2_image_path": getattr(m, "hint_2_image_path", None) or None,
         "hint_3_image_path": getattr(m, "hint_3_image_path", None) or None,
+        "hint_1_audio_path": getattr(m, "hint_1_audio_path", None) or None,
+        "hint_2_audio_path": getattr(m, "hint_2_audio_path", None) or None,
+        "hint_3_audio_path": getattr(m, "hint_3_audio_path", None) or None,
     }
 
 
@@ -325,6 +328,9 @@ def _quiz_item_with_hint_policy(
         "hint_1_image_path",
         "hint_2_image_path",
         "hint_3_image_path",
+        "hint_1_audio_path",
+        "hint_2_audio_path",
+        "hint_3_audio_path",
     ):
         out[key] = None
     return out
@@ -1112,11 +1118,68 @@ def record_quiz_hint_usage(
         patient_id=patient_id,
         memory_item_id=int(body.memory_item_id),
         hint_number=hint_num,
+        session_id=(body.session_id or "").strip()[:64] or None,
     )
     db.add(row)
     db.commit()
     db.refresh(row)
     return schemas.QuizHintUsageLogOut(id=int(row.id))
+
+
+@router.post(
+    "/quiz/{patient_id}/record-hint-audio-play",
+    response_model=schemas.QuizHintAudioPlayOut,
+)
+def record_quiz_hint_audio_play(
+    patient_id: int,
+    body: schemas.QuizHintAudioPlayIn,
+    passcode: Optional[str] = Query(None),
+    qr_token: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Patient played hint audio — mark on the matching hint usage row."""
+    _catalog_patient_auth(db, patient_id, passcode, qr_token)
+    if not _patient_quiz_hints_allowed(db, patient_id):
+        raise HTTPException(status_code=403, detail="Hints are not allowed for this patient")
+
+    hint_num = int(body.hint_number)
+    session_id = (body.session_id or "").strip()[:64]
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    mem = (
+        db.query(models.MemoryItem)
+        .filter(models.MemoryItem.id == body.memory_item_id)
+        .first()
+    )
+    if not mem:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    audio_path = (getattr(mem, f"hint_{hint_num}_audio_path", None) or "").strip()
+    if not audio_path:
+        raise HTTPException(status_code=400, detail="This hint has no audio")
+
+    row = (
+        db.query(models.PatientQuizHintUsage)
+        .filter(
+            models.PatientQuizHintUsage.patient_id == patient_id,
+            models.PatientQuizHintUsage.memory_item_id == int(body.memory_item_id),
+            models.PatientQuizHintUsage.hint_number == hint_num,
+            models.PatientQuizHintUsage.session_id == session_id,
+        )
+        .order_by(models.PatientQuizHintUsage.created_at.desc())
+        .first()
+    )
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="Hint usage not found — reveal the hint first",
+        )
+
+    row.audio_played = True
+    db.commit()
+    db.refresh(row)
+    return schemas.QuizHintAudioPlayOut(id=int(row.id), audio_played=True)
 
 
 def _norm_quiz_label(s: Optional[str]) -> str:

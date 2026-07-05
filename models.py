@@ -164,6 +164,9 @@ class MemoryItem(Base):
     hint_1_image_path = Column(String, nullable=True)
     hint_2_image_path = Column(String, nullable=True)
     hint_3_image_path = Column(String, nullable=True)
+    hint_1_audio_path = Column(String, nullable=True)
+    hint_2_audio_path = Column(String, nullable=True)
+    hint_3_audio_path = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
 
     patient = relationship("Patient", back_populates="memories")
@@ -302,6 +305,8 @@ class PatientQuizHintUsage(Base):
         index=True,
     )
     hint_number = Column(Integer, nullable=False)
+    session_id = Column(String(64), nullable=True, index=True)
+    audio_played = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=func.now())
 
 

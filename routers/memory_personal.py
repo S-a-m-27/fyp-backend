@@ -49,8 +49,10 @@ logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = str(STATIC_DIR / "memory" / "personal")
 HINT_IMAGE_DIR = str(STATIC_DIR / "memory" / "personal" / "hints")
+HINT_AUDIO_DIR = str(STATIC_DIR / "memory" / "personal" / "hints" / "audio")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(HINT_IMAGE_DIR, exist_ok=True)
+os.makedirs(HINT_AUDIO_DIR, exist_ok=True)
 
 
 # ---------- helpers ----------
@@ -69,6 +71,32 @@ async def _save_hint_image(upload: Optional[UploadFile]) -> Optional[str]:
         ext = "jpg"
     safe_name = f"{uuid.uuid4().hex}.{ext}"
     rel_path = f"static/memory/personal/hints/{safe_name}".replace("\\", "/")
+    abs_path = media_path(rel_path)
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(abs_path, "wb") as f:
+        f.write(content)
+    return rel_path
+
+
+async def _save_hint_audio(upload: Optional[UploadFile]) -> Optional[str]:
+    """Save one optional hint audio clip; returns relative static path or None."""
+    if upload is None:
+        return None
+    content = await upload.read()
+    if not content:
+        return None
+    max_bytes = 5 * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="Hint audio must be 5 MB or smaller",
+        )
+    filename = (upload.filename or "").strip()
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "mp3"
+    if ext not in ("mp3", "m4a", "wav", "aac", "ogg", "webm"):
+        ext = "mp3"
+    safe_name = f"{uuid.uuid4().hex}.{ext}"
+    rel_path = f"static/memory/personal/hints/audio/{safe_name}".replace("\\", "/")
     abs_path = media_path(rel_path)
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     with open(abs_path, "wb") as f:
@@ -108,6 +136,8 @@ def _memory_has_hints(memory: models.MemoryItem) -> bool:
         if (getattr(memory, f"hint_{i}", None) or "").strip():
             return True
         if (getattr(memory, f"hint_{i}_image_path", None) or "").strip():
+            return True
+        if (getattr(memory, f"hint_{i}_audio_path", None) or "").strip():
             return True
     return False
 
@@ -213,6 +243,9 @@ def _serialize(memory: models.MemoryItem) -> dict:
         "hint_1_image_path": getattr(memory, "hint_1_image_path", None),
         "hint_2_image_path": getattr(memory, "hint_2_image_path", None),
         "hint_3_image_path": getattr(memory, "hint_3_image_path", None),
+        "hint_1_audio_path": getattr(memory, "hint_1_audio_path", None),
+        "hint_2_audio_path": getattr(memory, "hint_2_audio_path", None),
+        "hint_3_audio_path": getattr(memory, "hint_3_audio_path", None),
         "related_person_name": memory.related_person_name,
         "related_person_relation": memory.related_person_relation,
         "category": memory.category,
@@ -292,6 +325,9 @@ async def upload_personal_memory(
     hint_1_image: Optional[UploadFile] = File(None),
     hint_2_image: Optional[UploadFile] = File(None),
     hint_3_image: Optional[UploadFile] = File(None),
+    hint_1_audio: Optional[UploadFile] = File(None),
+    hint_2_audio: Optional[UploadFile] = File(None),
+    hint_3_audio: Optional[UploadFile] = File(None),
     related_person_name: Optional[str] = Form(None),
     related_person_relation: Optional[str] = Form(None),
     files: List[UploadFile] = File(...),
@@ -333,6 +369,9 @@ async def upload_personal_memory(
     hint_1_image_path = await _save_hint_image(hint_1_image)
     hint_2_image_path = await _save_hint_image(hint_2_image)
     hint_3_image_path = await _save_hint_image(hint_3_image)
+    hint_1_audio_path = await _save_hint_audio(hint_1_audio)
+    hint_2_audio_path = await _save_hint_audio(hint_2_audio)
+    hint_3_audio_path = await _save_hint_audio(hint_3_audio)
 
     # 3. Persist.
     rname = (related_person_name or "").strip() or None
@@ -351,6 +390,9 @@ async def upload_personal_memory(
         hint_1_image_path=hint_1_image_path,
         hint_2_image_path=hint_2_image_path,
         hint_3_image_path=hint_3_image_path,
+        hint_1_audio_path=hint_1_audio_path,
+        hint_2_audio_path=hint_2_audio_path,
+        hint_3_audio_path=hint_3_audio_path,
         related_person_name=rname,
         related_person_relation=rrel,
         category=category,
@@ -450,6 +492,76 @@ def _memory_hint_text(memory: Optional[models.MemoryItem], hint_number: int) -> 
     return text or None
 
 
+def _memory_hint_has_audio(memory: Optional[models.MemoryItem], hint_number: int) -> bool:
+    if not memory or hint_number < 1 or hint_number > 3:
+        return False
+    return bool((getattr(memory, f"hint_{hint_number}_audio_path", None) or "").strip())
+
+
+def _hint_usage_session_key(row: models.PatientQuizHintUsage) -> str:
+    sid = (getattr(row, "session_id", None) or "").strip()
+    if sid:
+        return sid
+    ts = row.created_at
+    bucket = ts.strftime("%Y-%m-%d %H:%M") if ts else "unknown"
+    return f"legacy-{row.memory_item_id}-{bucket}"
+
+
+def _build_hint_activity_sessions(
+    rows: List[models.PatientQuizHintUsage],
+    mem_map: dict,
+    session_limit: int,
+) -> List[schemas.PatientQuizHintActivitySession]:
+    from collections import OrderedDict
+
+    grouped: OrderedDict = OrderedDict()
+    for row in sorted(rows, key=lambda r: r.created_at or datetime.min, reverse=True):
+        key = _hint_usage_session_key(row)
+        if key not in grouped:
+            grouped[key] = []
+        grouped[key].append(row)
+
+    sessions: List[schemas.PatientQuizHintActivitySession] = []
+    for key, group_rows in grouped.items():
+        group_rows.sort(key=lambda r: (r.created_at or datetime.min, r.hint_number))
+        first = group_rows[0]
+        mem = mem_map.get(int(first.memory_item_id))
+        title, person, relation = (
+            _memory_activity_label(mem) if mem else ("Unknown memory", None, None)
+        )
+        hints_used = [
+            schemas.PatientQuizHintSessionHintItem(
+                id=int(r.id),
+                hint_number=int(r.hint_number),
+                hint_text=_memory_hint_text(mem, int(r.hint_number)),
+                hint_has_audio=_memory_hint_has_audio(mem, int(r.hint_number)),
+                hint_audio_played=bool(getattr(r, "audio_played", False)),
+                used_at=r.created_at,
+            )
+            for r in group_rows
+        ]
+        sessions.append(
+            schemas.PatientQuizHintActivitySession(
+                session_id=key,
+                memory_item_id=int(first.memory_item_id),
+                memory_title=title,
+                person_name=person,
+                person_relation=relation,
+                memory_image_path=mem.file_path if mem else None,
+                started_at=first.created_at,
+                hints_used=hints_used,
+            )
+        )
+        if len(sessions) >= session_limit:
+            break
+
+    sessions.sort(
+        key=lambda s: s.started_at or datetime.min,
+        reverse=True,
+    )
+    return sessions[:session_limit]
+
+
 @router.get(
     "/patient/{patient_id}/quiz-hint-activity",
     response_model=schemas.PatientQuizHintActivityResponse,
@@ -460,18 +572,17 @@ def get_patient_quiz_hint_activity(
     limit: int = Query(30, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    """Caretaker: see when this patient used quiz hints."""
+    """Caretaker: hint usage grouped by quiz question session (one memory per session)."""
     _get_caretaker_patient(patient_id, caretaker_email, db)
 
-    rows = (
+    all_rows = (
         db.query(models.PatientQuizHintUsage)
         .filter(models.PatientQuizHintUsage.patient_id == patient_id)
         .order_by(models.PatientQuizHintUsage.created_at.desc())
-        .limit(limit)
         .all()
     )
 
-    mem_ids = {int(r.memory_item_id) for r in rows}
+    mem_ids = {int(r.memory_item_id) for r in all_rows}
     mem_map = {}
     if mem_ids:
         for m in (
@@ -484,44 +595,22 @@ def get_patient_quiz_hint_activity(
     now = datetime.utcnow()
     week_ago = now - timedelta(days=7)
 
-    total_count = (
-        db.query(models.PatientQuizHintUsage)
-        .filter(models.PatientQuizHintUsage.patient_id == patient_id)
-        .count()
-    )
-    last_7_days_count = (
-        db.query(models.PatientQuizHintUsage)
-        .filter(
-            models.PatientQuizHintUsage.patient_id == patient_id,
-            models.PatientQuizHintUsage.created_at >= week_ago,
-        )
-        .count()
-    )
+    session_keys = {_hint_usage_session_key(r) for r in all_rows}
+    total_sessions = len(session_keys)
 
-    items = []
-    for r in rows:
-        mem = mem_map.get(int(r.memory_item_id))
-        title, person, relation = (
-            _memory_activity_label(mem) if mem else ("Unknown memory", None, None)
-        )
-        items.append(
-            schemas.PatientQuizHintActivityItem(
-                id=int(r.id),
-                memory_item_id=int(r.memory_item_id),
-                hint_number=int(r.hint_number),
-                used_at=r.created_at,
-                memory_title=title,
-                person_name=person,
-                person_relation=relation,
-                memory_image_path=mem.file_path if mem else None,
-                hint_text=_memory_hint_text(mem, int(r.hint_number)),
-            )
-        )
+    week_session_keys = {
+        _hint_usage_session_key(r)
+        for r in all_rows
+        if r.created_at and r.created_at >= week_ago
+    }
+    last_7_days_sessions = len(week_session_keys)
+
+    sessions = _build_hint_activity_sessions(all_rows, mem_map, limit)
 
     return schemas.PatientQuizHintActivityResponse(
-        total_count=total_count,
-        last_7_days_count=last_7_days_count,
-        items=items,
+        total_sessions=total_sessions,
+        last_7_days_sessions=last_7_days_sessions,
+        sessions=sessions,
     )
 
 

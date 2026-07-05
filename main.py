@@ -136,6 +136,10 @@ try:
             ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_2_image_path VARCHAR(500);
             ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_3_image_path VARCHAR(500);
 
+            ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_1_audio_path VARCHAR(500);
+            ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_2_audio_path VARCHAR(500);
+            ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS hint_3_audio_path VARCHAR(500);
+
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS memory_training_completed BOOLEAN DEFAULT FALSE;
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS wellness_intro_completed BOOLEAN DEFAULT FALSE;
             ALTER TABLE patients ADD COLUMN IF NOT EXISTS training_sessions_completed INTEGER DEFAULT 0;
@@ -290,6 +294,13 @@ try:
                 ON patient_quiz_hint_usage(patient_id);
             CREATE INDEX IF NOT EXISTS ix_patient_quiz_hint_usage_created
                 ON patient_quiz_hint_usage(created_at DESC);
+
+            ALTER TABLE patient_quiz_hint_usage ADD COLUMN IF NOT EXISTS session_id VARCHAR(64);
+            CREATE INDEX IF NOT EXISTS ix_patient_quiz_hint_usage_session
+                ON patient_quiz_hint_usage(session_id);
+
+            ALTER TABLE patient_quiz_hint_usage ADD COLUMN IF NOT EXISTS audio_played BOOLEAN DEFAULT FALSE;
+            UPDATE patient_quiz_hint_usage SET audio_played = FALSE WHERE audio_played IS NULL;
             """
         ))
         conn.commit()
