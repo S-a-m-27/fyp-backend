@@ -104,16 +104,25 @@ class PatientQuizHintSessionHintItem(BaseModel):
     hint_has_audio: bool = False
     hint_audio_played: bool = False
     used_at: datetime
+    # Kis memory ka hint tha (quiz session mein multiple memories ho sakti hain)
+    memory_item_id: int
+    memory_title: str = ""
+    person_name: Optional[str] = None
+    person_relation: Optional[str] = None
+    memory_image_path: Optional[str] = None
 
 
 class PatientQuizHintActivitySession(BaseModel):
     session_id: str
-    memory_item_id: int
-    memory_title: str
+    # Session label — "Quiz Session N" (ek quiz round mein multiple memories)
+    memory_item_id: int  # first memory item id (backward compat)
+    memory_title: str    # quiz round label, e.g. "Quiz Session 1"
+    quiz_session_number: int = 0  # chronological number: oldest=1, newest=N
     person_name: Optional[str] = None
     person_relation: Optional[str] = None
     memory_image_path: Optional[str] = None
     started_at: datetime
+    total_memories_hinted: int = 0
     hints_used: List[PatientQuizHintSessionHintItem] = []
 
 

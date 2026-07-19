@@ -521,45 +521,72 @@ def _build_hint_activity_sessions(
             grouped[key] = []
         grouped[key].append(row)
 
-    sessions: List[schemas.PatientQuizHintActivitySession] = []
+    # Pehle saari sessions bana lo (bina number ke)
+    all_sessions_raw: List[schemas.PatientQuizHintActivitySession] = []
     for key, group_rows in grouped.items():
         group_rows.sort(key=lambda r: (r.created_at or datetime.min, r.hint_number))
         first = group_rows[0]
-        mem = mem_map.get(int(first.memory_item_id))
-        title, person, relation = (
-            _memory_activity_label(mem) if mem else ("Unknown memory", None, None)
-        )
-        hints_used = [
-            schemas.PatientQuizHintSessionHintItem(
-                id=int(r.id),
-                hint_number=int(r.hint_number),
-                hint_text=_memory_hint_text(mem, int(r.hint_number)),
-                hint_has_audio=_memory_hint_has_audio(mem, int(r.hint_number)),
-                hint_audio_played=bool(getattr(r, "audio_played", False)),
-                used_at=r.created_at,
+
+        # Distinct memory IDs used in this session
+        distinct_mem_ids = list(dict.fromkeys(int(r.memory_item_id) for r in group_rows))
+        total_memories_hinted = len(distinct_mem_ids)
+
+        # Session image: first memory ki image
+        first_mem = mem_map.get(int(first.memory_item_id))
+        session_image = first_mem.file_path if first_mem else None
+
+        # Har hint item ke liye uski apni memory ka data attach karo
+        hints_used = []
+        for r in group_rows:
+            mem = mem_map.get(int(r.memory_item_id))
+            title, person, relation = (
+                _memory_activity_label(mem) if mem else ("Unknown memory", None, None)
             )
-            for r in group_rows
-        ]
-        sessions.append(
+            hints_used.append(
+                schemas.PatientQuizHintSessionHintItem(
+                    id=int(r.id),
+                    hint_number=int(r.hint_number),
+                    hint_text=_memory_hint_text(mem, int(r.hint_number)),
+                    hint_has_audio=_memory_hint_has_audio(mem, int(r.hint_number)),
+                    hint_audio_played=bool(getattr(r, "audio_played", False)),
+                    used_at=r.created_at,
+                    memory_item_id=int(r.memory_item_id),
+                    memory_title=title,
+                    person_name=person,
+                    person_relation=relation,
+                    memory_image_path=mem.file_path if mem else None,
+                )
+            )
+
+        all_sessions_raw.append(
             schemas.PatientQuizHintActivitySession(
                 session_id=key,
                 memory_item_id=int(first.memory_item_id),
-                memory_title=title,
-                person_name=person,
-                person_relation=relation,
-                memory_image_path=mem.file_path if mem else None,
+                memory_title="",   # baad mein set hoga Quiz Session N
+                quiz_session_number=0,  # baad mein set hoga
+                person_name=None,
+                person_relation=None,
+                memory_image_path=session_image,
                 started_at=first.created_at,
+                total_memories_hinted=total_memories_hinted,
                 hints_used=hints_used,
             )
         )
-        if len(sessions) >= session_limit:
-            break
 
-    sessions.sort(
-        key=lambda s: s.started_at or datetime.min,
-        reverse=True,
-    )
-    return sessions[:session_limit]
+    # Oldest-first sort karo taake Quiz Session 1 = sabse purana
+    all_sessions_raw.sort(key=lambda s: s.started_at or datetime.min)
+
+    # Ab Quiz Session number assign karo (1 = oldest, N = newest)
+    total_all = len(all_sessions_raw)
+    for i, s in enumerate(all_sessions_raw, start=1):
+        s.memory_title = f"Quiz Session {i}"
+        s.quiz_session_number = i
+
+    # Newest pehle return karo (UI mein sabse upar Quiz Session N)
+    all_sessions_raw.reverse()
+
+    return all_sessions_raw[:session_limit]
+
 
 
 @router.get(
