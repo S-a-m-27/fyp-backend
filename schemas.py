@@ -110,6 +110,8 @@ class PatientQuizHintSessionHintItem(BaseModel):
     person_name: Optional[str] = None
     person_relation: Optional[str] = None
     memory_image_path: Optional[str] = None
+    # Us memory par caretaker ne total kitni hints banayi hain (out of 3 max)
+    total_hints_available: int = 0
 
 
 class PatientQuizHintActivitySession(BaseModel):

@@ -142,6 +142,18 @@ def _memory_has_hints(memory: models.MemoryItem) -> bool:
     return False
 
 
+def _get_total_hints_available(memory: Optional[models.MemoryItem]) -> int:
+    if not memory:
+        return 0
+    count = 0
+    for i in (1, 2, 3):
+        if (getattr(memory, f"hint_{i}", None) or "").strip() or \
+           (getattr(memory, f"hint_{i}_image_path", None) or "").strip() or \
+           (getattr(memory, f"hint_{i}_audio_path", None) or "").strip():
+            count += 1
+    return count
+
+
 def _get_caretaker_patient(
     patient_id: int, caretaker_email: str, db: Session
 ) -> models.Patient:
@@ -555,6 +567,7 @@ def _build_hint_activity_sessions(
                     person_name=person,
                     person_relation=relation,
                     memory_image_path=mem.file_path if mem else None,
+                    total_hints_available=_get_total_hints_available(mem),
                 )
             )
 
