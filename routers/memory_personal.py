@@ -547,13 +547,14 @@ def _build_hint_activity_sessions(
         first_mem = mem_map.get(int(first.memory_item_id))
         session_image = first_mem.file_path if first_mem else None
 
-        # Har hint item ke liye uski apni memory ka data attach karo
         hints_used = []
+        used_hint_numbers = set()
         for r in group_rows:
             mem = mem_map.get(int(r.memory_item_id))
             title, person, relation = (
                 _memory_activity_label(mem) if mem else ("Unknown memory", None, None)
             )
+            used_hint_numbers.add((int(r.memory_item_id), int(r.hint_number)))
             hints_used.append(
                 schemas.PatientQuizHintSessionHintItem(
                     id=int(r.id),
@@ -571,6 +572,38 @@ def _build_hint_activity_sessions(
                 )
             )
 
+        hints_unused = []
+        for mem_id in distinct_mem_ids:
+            mem = mem_map.get(mem_id)
+            if not mem:
+                continue
+            title, person, relation = _memory_activity_label(mem)
+            total_avail = _get_total_hints_available(mem)
+            for h_num in range(1, 4):
+                if h_num > total_avail:
+                    continue
+                # If there's text or audio for this hint, and it wasn't used
+                if (mem_id, h_num) not in used_hint_numbers:
+                    text = _memory_hint_text(mem, h_num)
+                    has_audio = _memory_hint_has_audio(mem, h_num)
+                    if text or has_audio:
+                        hints_unused.append(
+                            schemas.PatientQuizHintSessionHintItem(
+                                id=0,
+                                hint_number=h_num,
+                                hint_text=text,
+                                hint_has_audio=has_audio,
+                                hint_audio_played=False,
+                                used_at=first.created_at, # unused doesn't have a real used_at
+                                memory_item_id=mem_id,
+                                memory_title=title,
+                                person_name=person,
+                                person_relation=relation,
+                                memory_image_path=mem.file_path if mem else None,
+                                total_hints_available=total_avail,
+                            )
+                        )
+
         all_sessions_raw.append(
             schemas.PatientQuizHintActivitySession(
                 session_id=key,
@@ -583,6 +616,7 @@ def _build_hint_activity_sessions(
                 started_at=first.created_at,
                 total_memories_hinted=total_memories_hinted,
                 hints_used=hints_used,
+                hints_unused=hints_unused,
             )
         )
 

@@ -126,6 +126,7 @@ class PatientQuizHintActivitySession(BaseModel):
     started_at: datetime
     total_memories_hinted: int = 0
     hints_used: List[PatientQuizHintSessionHintItem] = []
+    hints_unused: List[PatientQuizHintSessionHintItem] = []
 
 
 class PatientQuizHintActivityResponse(BaseModel):
