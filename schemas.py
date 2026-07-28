@@ -122,7 +122,10 @@ class QuizRoundStatOut(BaseModel):
     correct_count: int
     wrong_count: int
     hint_count: int
-
+    audio_hint_count: Optional[int] = 0
+    text_hint_count: Optional[int] = 0
+    duration_seconds: Optional[int] = None
+    failed_memory_titles: Optional[str] = None
 
 class PatientQuizHintActivitySession(BaseModel):
     session_id: str
@@ -140,6 +143,7 @@ class PatientQuizHintActivitySession(BaseModel):
     assisted_recall_count: int = 0
     retake_memories_count: int = 0
     accuracy_rate: float = 100.0
+    accuracy_trend: Optional[float] = None
     hints_used: List[PatientQuizHintSessionHintItem] = []
     hints_unused: List[PatientQuizHintSessionHintItem] = []
     rounds: List[QuizRoundStatOut] = []
@@ -291,6 +295,10 @@ class QuizRoundStatIn(BaseModel):
     correct_count: int
     wrong_count: int
     hint_count: int
+    audio_hint_count: Optional[int] = 0
+    text_hint_count: Optional[int] = 0
+    duration_seconds: Optional[int] = None
+    failed_memory_titles: Optional[str] = None
 
 
 class QuizAttemptRecordIn(BaseModel):

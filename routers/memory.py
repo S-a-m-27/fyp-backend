@@ -1086,6 +1086,10 @@ def record_quiz_attempt_finish(
                 correct_count=r_stat.correct_count,
                 wrong_count=r_stat.wrong_count,
                 hint_count=r_stat.hint_count,
+                audio_hint_count=r_stat.audio_hint_count,
+                text_hint_count=r_stat.text_hint_count,
+                duration_seconds=r_stat.duration_seconds,
+                failed_memory_titles=r_stat.failed_memory_titles,
             )
             db.add(rs)
 

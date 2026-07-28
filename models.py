@@ -298,6 +298,10 @@ class PatientQuizRoundStat(Base):
     correct_count = Column(Integer, nullable=False)
     wrong_count = Column(Integer, nullable=False)
     hint_count = Column(Integer, nullable=False, default=0)
+    audio_hint_count = Column(Integer, nullable=True, default=0)
+    text_hint_count = Column(Integer, nullable=True, default=0)
+    duration_seconds = Column(Integer, nullable=True)
+    failed_memory_titles = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=func.now())
 
 

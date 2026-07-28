@@ -521,6 +521,7 @@ def _hint_usage_session_key(row: models.PatientQuizHintUsage) -> str:
 
 def _build_hint_activity_sessions(
     rows: List[models.PatientQuizHintUsage],
+    attempts: List[models.PatientQuizAttempt],
     mem_map: dict,
     round_stats_map: dict,
     session_limit: int,
@@ -528,6 +529,12 @@ def _build_hint_activity_sessions(
     from collections import OrderedDict
 
     grouped: OrderedDict = OrderedDict()
+    
+    # Pre-populate grouped with session_ids from attempts
+    for attempt in sorted(attempts, key=lambda a: a.created_at or datetime.min, reverse=True):
+        if attempt.session_id:
+            grouped[attempt.session_id] = []
+
     for row in sorted(rows, key=lambda r: r.created_at or datetime.min, reverse=True):
         key = _hint_usage_session_key(row)
         if key not in grouped:
@@ -536,16 +543,24 @@ def _build_hint_activity_sessions(
 
     # Pehle saari sessions bana lo (bina number ke)
     all_sessions_raw: List[schemas.PatientQuizHintActivitySession] = []
+    
+    # We need a way to get the session start time. Let's create a map from attempts.
+    attempt_map = {a.session_id: a for a in attempts if a.session_id}
+
     for key, group_rows in grouped.items():
         group_rows.sort(key=lambda r: (r.created_at or datetime.min, r.hint_number))
-        first = group_rows[0]
+        first = group_rows[0] if group_rows else None
+        attempt = attempt_map.get(key)
+        
+        session_created_at = attempt.created_at if attempt else (first.created_at if first else datetime.utcnow())
 
         # Distinct memory IDs used in this session
         distinct_mem_ids = list(dict.fromkeys(int(r.memory_item_id) for r in group_rows))
         total_memories_hinted = len(distinct_mem_ids)
 
         # Session image: first memory ki image
-        first_mem = mem_map.get(int(first.memory_item_id))
+        first_mem_id = int(first.memory_item_id) if first else 0
+        first_mem = mem_map.get(first_mem_id)
         session_image = first_mem.file_path if first_mem else None
 
         hints_used = []
@@ -620,13 +635,13 @@ def _build_hint_activity_sessions(
         all_sessions_raw.append(
             schemas.PatientQuizHintActivitySession(
                 session_id=key,
-                memory_item_id=int(first.memory_item_id),
+                memory_item_id=first_mem_id,
                 memory_title="",   # baad mein set hoga Quiz Session N
                 quiz_session_number=0,  # baad mein set hoga
                 person_name=None,
                 person_relation=None,
                 memory_image_path=session_image,
-                started_at=first.created_at,
+                started_at=session_created_at,
                 total_memories_hinted=total_memories_hinted,
                 retakes_count=retakes_cnt,
                 independent_recall_count=0,
@@ -647,6 +662,12 @@ def _build_hint_activity_sessions(
     for i, s in enumerate(all_sessions_raw, start=1):
         s.memory_title = f"Quiz Session {i}"
         s.quiz_session_number = i
+        
+        if i > 1:
+            prev = all_sessions_raw[i - 2]
+            s.accuracy_trend = s.accuracy_rate - prev.accuracy_rate
+        else:
+            s.accuracy_trend = 0.0
 
     # Newest pehle return karo (UI mein sabse upar Quiz Session N)
     all_sessions_raw.reverse()
@@ -675,6 +696,13 @@ def get_patient_quiz_hint_activity(
         .all()
     )
 
+    all_attempts = (
+        db.query(models.PatientQuizAttempt)
+        .filter(models.PatientQuizAttempt.patient_id == patient_id)
+        .order_by(models.PatientQuizAttempt.created_at.desc())
+        .all()
+    )
+
     mem_ids = {int(r.memory_item_id) for r in all_rows}
     mem_map = {}
     if mem_ids:
@@ -689,6 +717,10 @@ def get_patient_quiz_hint_activity(
     week_ago = now - timedelta(days=7)
 
     session_keys = {_hint_usage_session_key(r) for r in all_rows}
+    for a in all_attempts:
+        if a.session_id:
+            session_keys.add(a.session_id)
+            
     total_sessions = len(session_keys)
 
     week_session_keys = {
@@ -696,6 +728,10 @@ def get_patient_quiz_hint_activity(
         for r in all_rows
         if r.created_at and r.created_at >= week_ago
     }
+    for a in all_attempts:
+        if a.session_id and a.created_at and a.created_at >= week_ago:
+            week_session_keys.add(a.session_id)
+            
     last_7_days_sessions = len(week_session_keys)
 
     sessions_keys_list = list(session_keys)
@@ -718,10 +754,14 @@ def get_patient_quiz_hint_activity(
                     correct_count=int(rs.correct_count),
                     wrong_count=int(rs.wrong_count),
                     hint_count=int(rs.hint_count),
+                    audio_hint_count=int(rs.audio_hint_count) if rs.audio_hint_count is not None else 0,
+                    text_hint_count=int(rs.text_hint_count) if rs.text_hint_count is not None else 0,
+                    duration_seconds=int(rs.duration_seconds) if rs.duration_seconds is not None else None,
+                    failed_memory_titles=rs.failed_memory_titles,
                 )
             )
 
-    sessions = _build_hint_activity_sessions(all_rows, mem_map, round_stats_map, limit)
+    sessions = _build_hint_activity_sessions(all_rows, all_attempts, mem_map, round_stats_map, limit)
 
     return schemas.PatientQuizHintActivityResponse(
         total_sessions=total_sessions,
