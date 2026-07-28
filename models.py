@@ -283,6 +283,21 @@ class PatientQuizAttempt(Base):
     wrong_count = Column(Integer, nullable=False, default=0)
     target_score = Column(Integer, nullable=False)
     passed = Column(Boolean, nullable=False, default=False)
+    session_id = Column(String(50), nullable=True, index=True)
+    created_at = Column(DateTime, default=func.now())
+
+
+class PatientQuizRoundStat(Base):
+    """Stores stats for each round (initial, retake 1, etc) of a quiz session."""
+    __tablename__ = "patient_quiz_round_stats"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(50), nullable=False, index=True)
+    round_number = Column(Integer, nullable=False)
+    total_questions = Column(Integer, nullable=False)
+    correct_count = Column(Integer, nullable=False)
+    wrong_count = Column(Integer, nullable=False)
+    hint_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=func.now())
 
 
@@ -307,6 +322,7 @@ class PatientQuizHintUsage(Base):
     hint_number = Column(Integer, nullable=False)
     session_id = Column(String(64), nullable=True, index=True)
     audio_played = Column(Boolean, default=False, nullable=False)
+    is_retake = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=func.now())
 
 

@@ -522,6 +522,7 @@ def _hint_usage_session_key(row: models.PatientQuizHintUsage) -> str:
 def _build_hint_activity_sessions(
     rows: List[models.PatientQuizHintUsage],
     mem_map: dict,
+    round_stats_map: dict,
     session_limit: int,
 ) -> List[schemas.PatientQuizHintActivitySession]:
     from collections import OrderedDict
@@ -549,11 +550,15 @@ def _build_hint_activity_sessions(
 
         hints_used = []
         used_hint_numbers = set()
+        retake_memories_set = set()
         for r in group_rows:
             mem = mem_map.get(int(r.memory_item_id))
             title, person, relation = (
                 _memory_activity_label(mem) if mem else ("Unknown memory", None, None)
             )
+            is_retake_flag = bool(getattr(r, "is_retake", False))
+            if is_retake_flag:
+                retake_memories_set.add(int(r.memory_item_id))
             used_hint_numbers.add((int(r.memory_item_id), int(r.hint_number)))
             hints_used.append(
                 schemas.PatientQuizHintSessionHintItem(
@@ -562,6 +567,7 @@ def _build_hint_activity_sessions(
                     hint_text=_memory_hint_text(mem, int(r.hint_number)),
                     hint_has_audio=_memory_hint_has_audio(mem, int(r.hint_number)),
                     hint_audio_played=bool(getattr(r, "audio_played", False)),
+                    is_retake=is_retake_flag,
                     used_at=r.created_at,
                     memory_item_id=int(r.memory_item_id),
                     memory_title=title,
@@ -594,6 +600,7 @@ def _build_hint_activity_sessions(
                                 hint_text=text,
                                 hint_has_audio=has_audio,
                                 hint_audio_played=False,
+                                is_retake=False,
                                 used_at=first.created_at, # unused doesn't have a real used_at
                                 memory_item_id=mem_id,
                                 memory_title=title,
@@ -603,6 +610,12 @@ def _build_hint_activity_sessions(
                                 total_hints_available=total_avail,
                             )
                         )
+
+        retakes_cnt = len(retake_memories_set)
+        retake_mems_cnt = len(retake_memories_set)
+        assisted_cnt = len(distinct_mem_ids)
+        # Accuracy rate estimation: 100 - (retakes * 15%) bounded between 50 and 100
+        acc_rate = max(50.0, 100.0 - (retakes_cnt * 15.0))
 
         all_sessions_raw.append(
             schemas.PatientQuizHintActivitySession(
@@ -615,8 +628,14 @@ def _build_hint_activity_sessions(
                 memory_image_path=session_image,
                 started_at=first.created_at,
                 total_memories_hinted=total_memories_hinted,
+                retakes_count=retakes_cnt,
+                independent_recall_count=0,
+                assisted_recall_count=assisted_cnt,
+                retake_memories_count=retake_mems_cnt,
+                accuracy_rate=acc_rate,
                 hints_used=hints_used,
                 hints_unused=hints_unused,
+                rounds=round_stats_map.get(key, []),
             )
         )
 
@@ -679,7 +698,30 @@ def get_patient_quiz_hint_activity(
     }
     last_7_days_sessions = len(week_session_keys)
 
-    sessions = _build_hint_activity_sessions(all_rows, mem_map, limit)
+    sessions_keys_list = list(session_keys)
+    round_stats_map = {}
+    if sessions_keys_list:
+        rs_rows = (
+            db.query(models.PatientQuizRoundStat)
+            .filter(models.PatientQuizRoundStat.session_id.in_(sessions_keys_list))
+            .order_by(models.PatientQuizRoundStat.round_number.asc())
+            .all()
+        )
+        for rs in rs_rows:
+            sid = rs.session_id
+            if sid not in round_stats_map:
+                round_stats_map[sid] = []
+            round_stats_map[sid].append(
+                schemas.QuizRoundStatOut(
+                    round_number=int(rs.round_number),
+                    total_questions=int(rs.total_questions),
+                    correct_count=int(rs.correct_count),
+                    wrong_count=int(rs.wrong_count),
+                    hint_count=int(rs.hint_count),
+                )
+            )
+
+    sessions = _build_hint_activity_sessions(all_rows, mem_map, round_stats_map, limit)
 
     return schemas.PatientQuizHintActivityResponse(
         total_sessions=total_sessions,

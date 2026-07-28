@@ -78,6 +78,7 @@ class QuizHintUsageLogIn(BaseModel):
     memory_item_id: int
     hint_number: int = Field(..., ge=1, le=3)
     session_id: Optional[str] = None
+    is_retake: bool = False
 
 
 class QuizHintUsageLogOut(BaseModel):
@@ -103,6 +104,7 @@ class PatientQuizHintSessionHintItem(BaseModel):
     hint_text: Optional[str] = None
     hint_has_audio: bool = False
     hint_audio_played: bool = False
+    is_retake: bool = False
     used_at: datetime
     # Kis memory ka hint tha (quiz session mein multiple memories ho sakti hain)
     memory_item_id: int
@@ -112,6 +114,14 @@ class PatientQuizHintSessionHintItem(BaseModel):
     memory_image_path: Optional[str] = None
     # Us memory par caretaker ne total kitni hints banayi hain (out of 3 max)
     total_hints_available: int = 0
+
+
+class QuizRoundStatOut(BaseModel):
+    round_number: int
+    total_questions: int
+    correct_count: int
+    wrong_count: int
+    hint_count: int
 
 
 class PatientQuizHintActivitySession(BaseModel):
@@ -125,8 +135,14 @@ class PatientQuizHintActivitySession(BaseModel):
     memory_image_path: Optional[str] = None
     started_at: datetime
     total_memories_hinted: int = 0
+    retakes_count: int = 0
+    independent_recall_count: int = 0
+    assisted_recall_count: int = 0
+    retake_memories_count: int = 0
+    accuracy_rate: float = 100.0
     hints_used: List[PatientQuizHintSessionHintItem] = []
     hints_unused: List[PatientQuizHintSessionHintItem] = []
+    rounds: List[QuizRoundStatOut] = []
 
 
 class PatientQuizHintActivityResponse(BaseModel):
@@ -269,6 +285,14 @@ class PatientTrainingCompleteResponse(BaseModel):
     memory_training_completed: bool
 
 
+class QuizRoundStatIn(BaseModel):
+    round_number: int
+    total_questions: int
+    correct_count: int
+    wrong_count: int
+    hint_count: int
+
+
 class QuizAttemptRecordIn(BaseModel):
     """Patient-submitted summary when they finish a quiz round."""
 
@@ -276,6 +300,8 @@ class QuizAttemptRecordIn(BaseModel):
     correct_count: int
     wrong_count: int = 0
     target_score: int
+    session_id: Optional[str] = None
+    rounds: List[QuizRoundStatIn] = []
 
 
 class QuizAttemptRecordOut(BaseModel):

@@ -1072,9 +1072,23 @@ def record_quiz_attempt_finish(
         wrong_count=wrong,
         target_score=target,
         passed=passed,
+        session_id=body.session_id,
     )
     db.add(row)
     db.flush()
+
+    if body.session_id and body.rounds:
+        for r_stat in body.rounds:
+            rs = models.PatientQuizRoundStat(
+                session_id=body.session_id,
+                round_number=r_stat.round_number,
+                total_questions=r_stat.total_questions,
+                correct_count=r_stat.correct_count,
+                wrong_count=r_stat.wrong_count,
+                hint_count=r_stat.hint_count,
+            )
+            db.add(rs)
+
     reset = False
     if passed:
         p.training_sessions_completed = 0
@@ -1119,6 +1133,7 @@ def record_quiz_hint_usage(
         memory_item_id=int(body.memory_item_id),
         hint_number=hint_num,
         session_id=(body.session_id or "").strip()[:64] or None,
+        is_retake=bool(getattr(body, "is_retake", False)),
     )
     db.add(row)
     db.commit()
